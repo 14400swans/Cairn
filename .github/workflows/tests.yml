@@ -23,7 +23,19 @@ jobs:
         run: |
           pytest tests/ -v
 
-      # NOTE: these tests cover capsule.py and governance.py only --
-      # the two modules that don't require a live DataHub connection.
-      # agent.py's finding strategies are stubs (see DEVELOPMENT_NOTES.md)
-      # and are intentionally not exercised here yet.
+      # NOTE: capsule.py and governance.py are covered end-to-end, no
+      # live DataHub connection needed for either.
+      #
+      # agent.py's Sentinel._find_query_drift() is also covered here
+      # (tests/test_agent.py), using mock MCP responses shaped exactly
+      # like the ones returned by a real mcp-server-datahub v0.6.0
+      # instance (verified manually against a running quickstart on
+      # 2026-07-13 -- see DEVELOPMENT_NOTES.md). Mock data was used
+      # instead of a live connection because the healthcare/quickstart
+      # sample pack didn't happen to contain a dataset with both
+      # undocumented fields and query history at the same time -- CI
+      # shouldn't depend on that coincidence anyway.
+      #
+      # Sentinel._find_documentation_gaps() is still a stub (it's the
+      # one strategy that needs an LLM call) and is not exercised here
+      # yet.
