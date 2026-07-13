@@ -6,6 +6,13 @@
 # Cairn's local governance state (per-machine, not shared)
 .cairn_write_state.json
 
+# DataHub quickstart infrastructure (generated locally by
+# `datahub docker quickstart` / `datahub docker ingest-sample-data`,
+# lives under ~/.datahub/ — not part of this project, and machine-specific
+# if it ever ends up copied or symlinked into the repo by mistake)
+.datahub/
+docker-compose.yml
+
 # Python
 __pycache__/
 *.py[cod]
