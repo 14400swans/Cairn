@@ -19,6 +19,18 @@ jobs:
         run: |
           pip install -r requirements.txt -r requirements-dev.txt
 
+      - name: Install cairn package (editable)
+        # Without this, `pytest tests/ -v` fails with
+        # "ModuleNotFoundError: No module named 'cairn'" — unlike
+        # `python -m pytest`, plain `pytest` invoked as a script doesn't
+        # add the repo root to sys.path in GitHub Actions' environment,
+        # so the local package needs to be properly installed instead.
+        # Confirmed as the root cause 2026-07-13 against a real failing
+        # run (both tests/test_agent.py and tests/test_governance.py
+        # failed identically at collection time with this error).
+        run: |
+          pip install -e .
+
       - name: Run tests
         run: |
           pytest tests/ -v
@@ -36,6 +48,6 @@ jobs:
       # undocumented fields and query history at the same time -- CI
       # shouldn't depend on that coincidence anyway.
       #
-      # Sentinel._find_documentation_gaps() is still a stub (it's the
-      # one strategy that needs an LLM call) and is not exercised here
-      # yet.
+      # Sentinel._find_documentation_gaps() is also covered here, with
+      # the anthropic client monkeypatched -- no real API key or
+      # network access needed in CI for this either.
