@@ -37,6 +37,20 @@ def _redact(text: str, secret: str) -> str:
     return text.replace(secret, "***REDACTED***")
 
 
+def _extract_result_text(result: Any) -> str:
+    """
+    Pull whatever human-readable text an MCP tool result carries, for
+    use in an error message. Mirrors agent.py's own _structured()
+    fallback logic (content blocks with a .text attribute), but doesn't
+    try to parse it as JSON here — this is purely for logging/error
+    text, not for further processing.
+    """
+    content = getattr(result, "content", None) or []
+    texts = [getattr(block, "text", None) for block in content]
+    texts = [t for t in texts if t]
+    return "; ".join(texts) if texts else repr(result)
+
+
 class DataHubMCPError(RuntimeError):
     """Raised when a DataHub MCP tool call fails or times out.
 
@@ -112,15 +126,26 @@ class DataHubMCPClient:
         """Call one DataHub MCP tool and return its parsed result.
 
         Raises DataHubMCPError (never a raw transport exception) on
-        timeout or failure, with any token value stripped from the
-        message first.
+        timeout, transport failure, OR a tool-level error -- with any
+        token value stripped from the message first.
+
+        IMPORTANT, added 2026-07-13 after a live write bug: the MCP
+        protocol reports a tool-side failure (e.g. a server-side
+        validation error) as a normal CallToolResult with isError=True
+        and an HTTP 200 -- it does NOT raise on the transport layer.
+        This method previously returned that result as if it were a
+        success, which let a real write failure (DataHub rejected the
+        payload) get logged upstream in agent.py as "WROTE", and
+        governance.py's cooldown state got recorded for a write that
+        never actually happened. Checking isError here is what makes
+        that log line trustworthy.
         """
         if self._session is None:
             raise DataHubMCPError(
                 "DataHubMCPClient used outside of `async with` -- no active session"
             )
         try:
-            return await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 self._session.call_tool(tool_name, arguments),
                 timeout=self.call_timeout_seconds,
             )
@@ -135,6 +160,15 @@ class DataHubMCPClient:
             raise DataHubMCPError(
                 f"Tool call `{tool_name}` failed: {safe_message}"
             ) from exc
+
+        if getattr(result, "isError", False):
+            error_text = _redact(_extract_result_text(result), self.token)
+            logger.error("Tool call `%s` returned an error: %s", tool_name, error_text)
+            raise DataHubMCPError(
+                f"Tool call `{tool_name}` returned an error: {error_text}"
+            )
+
+        return result
 
     # --- Convenience wrappers around the read-only tools Sentinel needs ---
 

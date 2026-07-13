@@ -95,3 +95,33 @@ def test_capsule_structured_properties_shape():
     ]
     assert props["urn:li:structuredProperty:io.cairn.agentId"] == [capsule.agent_id]
     assert props["urn:li:structuredProperty:io.cairn.summary"] == [capsule.summary]
+
+
+def test_capsule_session_timestamp_is_date_only():
+    """
+    Pins down a real bug found 2026-07-13 via a live write against
+    DataHub: io.cairn.sessionTimestamp is registered as a `date` type
+    structured property, which DataHub validates strictly as
+    YYYY-MM-DD. Sending the full ISO 8601 datetime that Capsule.session_ts
+    carries (with time and timezone, used elsewhere for cooldown
+    precision) was rejected server-side with "should be a date with
+    format YYYY-MM-DD". This test confirms the value sent for THIS
+    property is truncated to just the date portion, while
+    capsule.session_ts itself stays a full datetime.
+    """
+    capsule = Capsule(
+        agent_id="test-agent",
+        entity_urn="urn:li:dataset:(test,date,PROD)",
+        finding_type=FindingType.QUERY_DRIFT,
+        confidence=0.8,
+        summary="test finding",
+        session_ts="2026-07-13T17:44:59.604804+00:00",
+    )
+    payload = capsule.to_structured_properties()
+    props = payload["property_values"]
+
+    assert props["urn:li:structuredProperty:io.cairn.sessionTimestamp"] == ["2026-07-13"]
+    # The dataclass field itself must remain the full datetime — other
+    # code (GovernanceGate cooldown math, previous_capsule_for ordering)
+    # depends on the time-of-day precision.
+    assert capsule.session_ts == "2026-07-13T17:44:59.604804+00:00"

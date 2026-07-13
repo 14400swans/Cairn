@@ -55,22 +55,29 @@ class Capsule:
         property_values keys must be FULL structured property URNs
         (e.g. "urn:li:structuredProperty:io.cairn.confidence"), and
         every value — even a single one — must be wrapped in a list.
-
         An earlier version of this method produced a flat
-        {"urn": ..., "structured_properties": {...}} shape that looked
-        reasonable but was never checked against the real tool schema.
-        It failed silently server-side with an "Invalid arguments"
-        warning (missing `urn`, unexpected `structured_properties`)
-        while Cairn's own code still logged "WROTE", because the old
-        add_structured_properties() call didn't raise on that response.
-        Confirmed empirically: a write with the old shape produced no
-        visible property in the DataHub UI's Props tab; this fixed
-        shape is what the live tool source actually expects.
+        {"urn": ..., "structured_properties": {...}} shape that didn't
+        match the real tool schema at all and failed silently.
+
+        SECOND ISSUE, ALSO VERIFIED 2026-07-13 via a live write attempt
+        against a real DataHub instance: `io.cairn.sessionTimestamp` is
+        registered in datahub/structured_properties.yaml as a `date`
+        type property, and DataHub validates that strictly as
+        YYYY-MM-DD -- a full ISO 8601 datetime (with time and timezone,
+        which self.session_ts intentionally carries for cooldown
+        precision and ordering elsewhere) is rejected server-side with
+        "should be a date with format YYYY-MM-DD". self.session_ts
+        itself is left untouched everywhere else (JSON round-trip,
+        GovernanceGate cooldown math, previous_capsule_for ordering) --
+        only the value sent to THIS specific structured property is
+        truncated to its date portion.
         """
         prefix = "urn:li:structuredProperty:io.cairn."
+        session_date = datetime.fromisoformat(self.session_ts).date().isoformat()
+
         property_values: dict = {
             f"{prefix}agentId": [self.agent_id],
-            f"{prefix}sessionTimestamp": [self.session_ts],
+            f"{prefix}sessionTimestamp": [session_date],
             f"{prefix}confidence": [round(self.confidence, 2)],
             f"{prefix}findingType": [self.finding_type.value],
             f"{prefix}summary": [self.summary],

@@ -438,9 +438,29 @@ class Sentinel:
                 continue
 
             payload = capsule.to_structured_properties()
-            await self.client.add_structured_properties(
-                payload["property_values"], payload["entity_urns"]
-            )
+            try:
+                await self.client.add_structured_properties(
+                    payload["property_values"], payload["entity_urns"]
+                )
+            except DataHubMCPError as exc:
+                # A write that DataHub itself rejects (e.g. a value type
+                # or format validation error) must NOT be recorded in
+                # governance state. Added 2026-07-13 after a live bug:
+                # mcp_client.call() used to return a server-side error
+                # result as if it were a success, which caused this
+                # branch's code to log "WROTE" and gate.record() to poison
+                # the cooldown for a write that never actually landed.
+                # Now that mcp_client.call() raises on isError, this
+                # except block is what keeps a single bad write from
+                # crashing the whole run (via run()'s outer handler) while
+                # still making the failure loud and un-recorded, so the
+                # entity is eligible to be retried on the next run instead
+                # of sitting in a false 24h cooldown.
+                logger.error(
+                    "WRITE FAILED for %s — %s", capsule.entity_urn, exc
+                )
+                continue
+
             self.gate.record(capsule)
             logger.info(
                 "WROTE capsule for %s (confidence=%.2f)",
@@ -459,7 +479,11 @@ async def run(dataset_urn: str) -> None:
             await sentinel.process_findings(findings)
     except DataHubMCPError as exc:
         # Caught here (not just in mcp_client.py) so a demo run ends with
-        # one clear, actionable line instead of a raw stack trace.
+        # one clear, actionable line instead of a raw stack trace. Note
+        # this now only fires for connection-level failures (or a write
+        # error surfaced outside process_findings' own try/except) since
+        # per-write failures are handled and logged inside
+        # process_findings above without aborting the whole run.
         logger.error("Cairn stopped: %s", exc)
         raise SystemExit(1) from exc
 
