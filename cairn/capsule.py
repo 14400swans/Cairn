@@ -41,27 +41,54 @@ class Capsule:
 
     def to_structured_properties(self) -> dict:
         """
-        Shape this capsule as a payload for DataHub's
+        Shape this capsule as a payload for DataHub's real
         add_structured_properties MCP tool.
 
-        NOTE: DataHub structured properties must be defined (their
-        qualified names + types registered) before they can be set on
-        an entity. See DEVELOPMENT_NOTES.md for the property definitions
-        this scaffold assumes you will register once, up front, via
-        `datahub-skills:datahub-enrich` or the DataHub UI.
+        VERIFIED 2026-07-13 against mcp-server-datahub==0.6.0 source
+        (tools/structured_properties.py): the tool's actual signature is
+
+            add_structured_properties(
+                property_values: Dict[str, List[Union[str, float, int]]],
+                entity_urns: List[str],
+            )
+
+        property_values keys must be FULL structured property URNs
+        (e.g. "urn:li:structuredProperty:io.cairn.confidence"), and
+        every value — even a single one — must be wrapped in a list.
+
+        An earlier version of this method produced a flat
+        {"urn": ..., "structured_properties": {...}} shape that looked
+        reasonable but was never checked against the real tool schema.
+        It failed silently server-side with an "Invalid arguments"
+        warning (missing `urn`, unexpected `structured_properties`)
+        while Cairn's own code still logged "WROTE", because the old
+        add_structured_properties() call didn't raise on that response.
+        Confirmed empirically: a write with the old shape produced no
+        visible property in the DataHub UI's Props tab; this fixed
+        shape is what the live tool source actually expects.
         """
+        prefix = "urn:li:structuredProperty:io.cairn."
+        property_values: dict = {
+            f"{prefix}agentId": [self.agent_id],
+            f"{prefix}sessionTimestamp": [self.session_ts],
+            f"{prefix}confidence": [round(self.confidence, 2)],
+            f"{prefix}findingType": [self.finding_type.value],
+            f"{prefix}summary": [self.summary],
+            f"{prefix}requiresHumanReview": [str(self.requires_human_review)],
+        }
+        # Multi-valued, optional properties: omit rather than send an
+        # empty list, since the property's value-type validation may
+        # reject an empty values list.
+        if self.unresolved_questions:
+            property_values[f"{prefix}unresolvedQuestions"] = list(
+                self.unresolved_questions
+            )
+        if self.assumptions_made:
+            property_values[f"{prefix}assumptionsMade"] = list(self.assumptions_made)
+
         return {
-            "urn": self.entity_urn,
-            "structured_properties": {
-                "io.cairn.agentId": self.agent_id,
-                "io.cairn.sessionTimestamp": self.session_ts,
-                "io.cairn.confidence": round(self.confidence, 2),
-                "io.cairn.findingType": self.finding_type.value,
-                "io.cairn.summary": self.summary,
-                "io.cairn.unresolvedQuestions": self.unresolved_questions,
-                "io.cairn.assumptionsMade": self.assumptions_made,
-                "io.cairn.requiresHumanReview": self.requires_human_review,
-            },
+            "entity_urns": [self.entity_urn],
+            "property_values": property_values,
         }
 
     def to_json(self) -> str:

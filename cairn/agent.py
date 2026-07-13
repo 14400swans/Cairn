@@ -437,11 +437,16 @@ class Sentinel:
                 )
                 continue
 
+            payload = capsule.to_structured_properties()
             await self.client.add_structured_properties(
-                capsule.entity_urn, capsule.to_structured_properties()["structured_properties"]
+                payload["property_values"], payload["entity_urns"]
             )
             self.gate.record(capsule)
-            logger.info("WROTE capsule for %s (confidence=%.2f)", capsule.entity_urn, capsule.confidence)
+            logger.info(
+                "WROTE capsule for %s (confidence=%.2f)",
+                capsule.entity_urn,
+                capsule.confidence,
+            )
 
 
 async def run(dataset_urn: str) -> None:

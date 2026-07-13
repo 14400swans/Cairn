@@ -161,10 +161,28 @@ class DataHubMCPClient:
 
     # --- Write tools — only ever called through governance.GovernanceGate ---
 
-    async def add_structured_properties(self, urn: str, properties: dict) -> Any:
+    async def add_structured_properties(
+        self, property_values: dict, entity_urns: list[str]
+    ) -> Any:
+        """
+        Matches the real mcp-server-datahub add_structured_properties
+        tool signature exactly (verified 2026-07-13 against
+        mcp-server-datahub==0.6.0 source):
+
+            add_structured_properties(
+                property_values: Dict[str, List[Union[str, float, int]]],
+                entity_urns: List[str],
+            )
+
+        property_values must be keyed by FULL structured property URNs
+        with each value list-wrapped, and entity_urns is always a list
+        even for a single entity. Callers should pass
+        capsule.to_structured_properties()'s two dict keys straight
+        through — see Sentinel.process_findings in agent.py.
+        """
         return await self.call(
             "add_structured_properties",
-            {"urn": urn, "structured_properties": properties},
+            {"property_values": property_values, "entity_urns": entity_urns},
         )
 
     async def update_description(self, urn: str, description: str) -> Any:

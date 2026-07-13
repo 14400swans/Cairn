@@ -74,9 +74,24 @@ def test_capsule_roundtrips_through_json():
 
 
 def test_capsule_structured_properties_shape():
+    """
+    Verified 2026-07-13 against mcp-server-datahub==0.6.0's real
+    add_structured_properties tool source: property_values is keyed by
+    FULL structured property URNs, each value list-wrapped, and
+    entity_urns is a separate list. This replaces an earlier version of
+    this test that pinned down a {"urn": ..., "structured_properties":
+    {...}} shape which looked reasonable but didn't match what the live
+    MCP server actually accepts.
+    """
     capsule = make_capsule()
     payload = capsule.to_structured_properties()
-    assert payload["urn"] == capsule.entity_urn
-    props = payload["structured_properties"]
-    assert props["io.cairn.confidence"] == capsule.confidence
-    assert props["io.cairn.findingType"] == capsule.finding_type.value
+
+    assert payload["entity_urns"] == [capsule.entity_urn]
+
+    props = payload["property_values"]
+    assert props["urn:li:structuredProperty:io.cairn.confidence"] == [capsule.confidence]
+    assert props["urn:li:structuredProperty:io.cairn.findingType"] == [
+        capsule.finding_type.value
+    ]
+    assert props["urn:li:structuredProperty:io.cairn.agentId"] == [capsule.agent_id]
+    assert props["urn:li:structuredProperty:io.cairn.summary"] == [capsule.summary]
