@@ -1,0 +1,13 @@
+{
+  "entity_urn": "urn:li:dataset:(urn:li:dataPlatform:snowflake,healthcare.patient_vitals,PROD)",
+  "finding_type": "query_drift",
+  "confidence": 0.81,
+  "summary": "heavily queried, undocumented column",
+  "unresolved_questions": [
+    "Column `flag_override` appears in 34 of the last 50 queries against this table, but has no description, no glossary term, and no owner comment. What does an override flag of 2 mean versus 1?"
+  ],
+  "assumptions_made": [
+    "Assumed `flag_override` is not a system-generated audit column, based on naming convention only — not confirmed against source system docs."
+  ],
+  "note": "This is a fabricated example for illustration. It shows the shape of output Cairn produces, not a verified finding from a live DataHub instance."
+}

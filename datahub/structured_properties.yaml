@@ -1,0 +1,87 @@
+# structured_properties.yaml
+#
+# Registers the io.cairn.* structured property types Cairn writes via
+# add_structured_properties. This replaces the manual "click through the
+# DataHub UI" step mentioned in earlier drafts of this project with a
+# single reviewable, re-runnable command:
+#
+#     datahub properties upsert -f datahub/structured_properties.yaml
+#
+# Run this once against your DataHub instance before Cairn's first
+# write. Safe to re-run — it's an upsert.
+#
+# Reference: DataHub docs -> Structured Properties -> YAML definition format.
+# Confirm the exact CLI subcommand name against your installed DataHub
+# CLI version (`datahub properties --help`) before your demo, since this
+# surface has moved between DataHub releases.
+
+- id: cairn-agent-id
+  qualified_name: io.cairn.agentId
+  type: string
+  display_name: "Cairn: Agent ID"
+  description: "Which Cairn agent/version produced this capsule."
+  entity_types:
+    - dataset
+
+- id: cairn-session-timestamp
+  qualified_name: io.cairn.sessionTimestamp
+  type: date
+  display_name: "Cairn: Session Timestamp"
+  description: "When this capsule was written (ISO 8601, UTC)."
+  entity_types:
+    - dataset
+
+- id: cairn-confidence
+  qualified_name: io.cairn.confidence
+  type: number
+  display_name: "Cairn: Confidence"
+  description: "0.0-1.0 confidence score behind this finding."
+  entity_types:
+    - dataset
+
+- id: cairn-finding-type
+  qualified_name: io.cairn.findingType
+  type: string
+  display_name: "Cairn: Finding Type"
+  description: "One of: documentation_gap, query_drift, lineage_break, ownership_stale."
+  entity_types:
+    - dataset
+  allowed_values:
+    - value: documentation_gap
+    - value: query_drift
+    - value: lineage_break
+    - value: ownership_stale
+
+- id: cairn-summary
+  qualified_name: io.cairn.summary
+  type: string
+  display_name: "Cairn: Summary"
+  description: "Short, human-skimmable summary of the finding."
+  entity_types:
+    - dataset
+
+- id: cairn-unresolved-questions
+  qualified_name: io.cairn.unresolvedQuestions
+  type: string
+  cardinality: MULTIPLE
+  display_name: "Cairn: Unresolved Questions"
+  description: "Specific open questions the next agent or person should look into."
+  entity_types:
+    - dataset
+
+- id: cairn-assumptions-made
+  qualified_name: io.cairn.assumptionsMade
+  type: string
+  cardinality: MULTIPLE
+  display_name: "Cairn: Assumptions Made"
+  description: "Assumptions Cairn made while producing this finding, stated explicitly."
+  entity_types:
+    - dataset
+
+- id: cairn-requires-human-review
+  qualified_name: io.cairn.requiresHumanReview
+  type: string
+  display_name: "Cairn: Requires Human Review"
+  description: "true/false -- whether this finding should be confirmed by a person before acting on it."
+  entity_types:
+    - dataset

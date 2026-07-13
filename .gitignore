@@ -1,0 +1,31 @@
+# Secrets — never commit these
+.env
+*.env
+!.env.example
+
+# Cairn's local governance state (per-machine, not shared)
+.cairn_write_state.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Editors
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

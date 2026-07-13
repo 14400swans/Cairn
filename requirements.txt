@@ -1,0 +1,15 @@
+# Core MCP client for talking to the DataHub MCP Server.
+# Verified 2026-07-13: streamablehttp_client + ClientSession import
+# successfully against both mcp==1.9.0 and mcp==1.28.1 (current latest
+# at time of writing). Pinned to a floor + major-version ceiling rather
+# than an exact version, since the mcp-server-datahub project moves
+# fast and an exact pin would go stale almost immediately.
+mcp>=1.9.0,<2.0.0
+
+python-dotenv~=1.0.1
+click~=8.1.7
+
+# NOTE: pydantic was removed from this list -- Capsule uses plain
+# dataclasses (see cairn/capsule.py) and pydantic was an unused
+# dependency in an earlier version of this file. Add it back only if
+# you actually adopt it for validation.

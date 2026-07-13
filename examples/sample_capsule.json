@@ -1,0 +1,16 @@
+{
+  "agent_id": "cairn-sentinel-v1",
+  "entity_urn": "urn:li:dataset:(urn:li:dataPlatform:snowflake,healthcare.patient_vitals,PROD)",
+  "finding_type": "query_drift",
+  "confidence": 0.81,
+  "summary": "heavily queried, undocumented column",
+  "unresolved_questions": [
+    "Column `flag_override` appears in 34 of the last 50 queries against this table, but has no description, no glossary term, and no owner comment. What does an override flag of 2 mean versus 1?"
+  ],
+  "assumptions_made": [
+    "Assumed `flag_override` is not a system-generated audit column, based on naming convention only — not confirmed against source system docs."
+  ],
+  "requires_human_review": true,
+  "session_ts": "2026-07-20T14:32:00+00:00",
+  "note": "Fabricated example — illustrates the exact payload shape written via add_structured_properties, not a captured run against a live instance."
+}

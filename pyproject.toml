@@ -1,0 +1,36 @@
+[project]
+name = "cairn"
+version = "0.1.0"
+description = "A context relay agent for DataHub — leaves structured handoff markers for the next agent or person."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "Tepsu82" }]
+dependencies = [
+    "mcp>=1.9.0,<2.0.0",
+    "python-dotenv~=1.0.1",
+    "click~=8.1.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest~=8.3.3", "pytest-asyncio~=0.24.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# NOTE: no async tests exist yet (test_governance.py covers only the
+# synchronous capsule.py and governance.py modules). Add
+# `asyncio_mode = "auto"` back here once you write tests against
+# agent.py / mcp_client.py.
+
+[tool.setuptools]
+# Explicit, not auto-discovered: without this, setuptools' flat-layout
+# discovery sees both cairn/ (the package) and datahub/ (a data folder
+# containing structured_properties.yaml, no __init__.py) as candidate
+# top-level packages and refuses to build at all. Verified this fails
+# with a clear "Multiple top-level packages discovered" error without
+# this line.
+packages = ["cairn"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
