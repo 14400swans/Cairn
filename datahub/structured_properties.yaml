@@ -11,11 +11,16 @@
 # write. Safe to re-run — it's an upsert.
 #
 # Reference: DataHub docs -> Structured Properties -> YAML definition format.
-# Confirm the exact CLI subcommand name against your installed DataHub
-# CLI version (`datahub properties --help`) before your demo, since this
-# surface has moved between DataHub releases.
+# CONFIRMED 2026-07-13 against a real `datahub` CLI (acryl-datahub
+# 1.6.0.13): `id` and `qualified_name` must be IDENTICAL strings when
+# both are provided without an explicit `urn` — an earlier draft of
+# this file used a short slug for `id` (e.g. "cairn-agent-id") distinct
+# from `qualified_name` (e.g. "io.cairn.agentId"), which the CLI
+# rejects with: "AssertionError: ID in the urn and the qualified_name
+# must match". Fixed here by setting `id` equal to `qualified_name`
+# for every property below.
 
-- id: cairn-agent-id
+- id: io.cairn.agentId
   qualified_name: io.cairn.agentId
   type: string
   display_name: "Cairn: Agent ID"
@@ -23,7 +28,7 @@
   entity_types:
     - dataset
 
-- id: cairn-session-timestamp
+- id: io.cairn.sessionTimestamp
   qualified_name: io.cairn.sessionTimestamp
   type: date
   display_name: "Cairn: Session Timestamp"
@@ -31,7 +36,7 @@
   entity_types:
     - dataset
 
-- id: cairn-confidence
+- id: io.cairn.confidence
   qualified_name: io.cairn.confidence
   type: number
   display_name: "Cairn: Confidence"
@@ -39,7 +44,7 @@
   entity_types:
     - dataset
 
-- id: cairn-finding-type
+- id: io.cairn.findingType
   qualified_name: io.cairn.findingType
   type: string
   display_name: "Cairn: Finding Type"
@@ -52,7 +57,7 @@
     - value: lineage_break
     - value: ownership_stale
 
-- id: cairn-summary
+- id: io.cairn.summary
   qualified_name: io.cairn.summary
   type: string
   display_name: "Cairn: Summary"
@@ -60,7 +65,7 @@
   entity_types:
     - dataset
 
-- id: cairn-unresolved-questions
+- id: io.cairn.unresolvedQuestions
   qualified_name: io.cairn.unresolvedQuestions
   type: string
   cardinality: MULTIPLE
@@ -69,7 +74,7 @@
   entity_types:
     - dataset
 
-- id: cairn-assumptions-made
+- id: io.cairn.assumptionsMade
   qualified_name: io.cairn.assumptionsMade
   type: string
   cardinality: MULTIPLE
@@ -78,7 +83,7 @@
   entity_types:
     - dataset
 
-- id: cairn-requires-human-review
+- id: io.cairn.requiresHumanReview
   qualified_name: io.cairn.requiresHumanReview
   type: string
   display_name: "Cairn: Requires Human Review"
