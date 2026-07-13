@@ -468,6 +468,76 @@ class Sentinel:
                 capsule.confidence,
             )
 
+            # Also leave a human-readable reflection document alongside the
+            # machine-readable structured properties. The structured
+            # properties above are the capsule's authoritative record and
+            # what governance/cooldown state is based on; this document is
+            # a best-effort presentation layer so a person skimming the
+            # dataset page sees Cairn's contribution too, not only an agent
+            # parsing the Props tab. A failure here is logged but does not
+            # undo or hide the structured property write already recorded.
+            try:
+                await self._write_reflection_document(capsule)
+            except DataHubMCPError as exc:
+                logger.warning(
+                    "Structured property write for %s succeeded, but the "
+                    "human-readable reflection document failed — %s",
+                    capsule.entity_urn,
+                    exc,
+                )
+
+    async def _write_reflection_document(self, capsule: Capsule) -> None:
+        """
+        Save a short markdown document via save_document, linked to the
+        entity via related_assets so it surfaces on the dataset's own
+        page in the DataHub UI -- not just findable through search or
+        buried in the Props tab.
+
+        Uses document_type="Context", which matches Cairn's own framing
+        (a handoff marker for the next agent or person) among the tool's
+        fixed set of allowed types.
+
+        NOTE: save_document's own docstring says an interactive agent
+        should confirm with the user before saving. Cairn is not
+        interactive -- GovernanceGate.evaluate() (confidence threshold,
+        cooldown, per-run cap) is Cairn's equivalent confirmation
+        mechanism, already passed by the time this method is called.
+        """
+        # Datasets URNs look like "urn:li:dataset:(urn:li:dataPlatform:hive,
+        # SampleHiveDataset,PROD)" -- the human-readable name is the
+        # second-to-last comma-separated segment. Falls back to the full
+        # URN if the format doesn't match (e.g. a non-dataset entity type).
+        parts = capsule.entity_urn.split(",")
+        entity_name = parts[-2] if len(parts) >= 2 else capsule.entity_urn
+
+        title = f"Cairn: {capsule.finding_type.value.replace('_', ' ')} — {entity_name}"
+
+        lines = [
+            f"**Finding type:** {capsule.finding_type.value}",
+            f"**Confidence:** {capsule.confidence:.2f}",
+            f"**Summary:** {capsule.summary}",
+            "",
+            "### Unresolved questions",
+        ]
+        lines += [f"- {q}" for q in capsule.unresolved_questions] or ["- (none recorded)"]
+        lines += ["", "### Assumptions made"]
+        lines += [f"- {a}" for a in capsule.assumptions_made] or ["- (none recorded)"]
+        lines += [
+            "",
+            f"_Written by {capsule.agent_id} on {capsule.session_ts}. A "
+            f"machine-readable copy of this finding is also stored on "
+            f"this dataset's structured properties (io.cairn.*)._",
+        ]
+        content = "\n".join(lines)
+
+        await self.client.save_document(
+            document_type="Context",
+            title=title,
+            content=content,
+            topics=["cairn", capsule.finding_type.value],
+            related_assets=[capsule.entity_urn],
+        )
+
 
 async def run(dataset_urn: str) -> None:
     gate = GovernanceGate()

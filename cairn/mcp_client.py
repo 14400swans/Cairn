@@ -224,8 +224,41 @@ class DataHubMCPClient:
             "update_description", {"urn": urn, "description": description}
         )
 
-    async def save_document(self, title: str, content: str, parent_folder: str) -> Any:
-        return await self.call(
-            "save_document",
-            {"title": title, "content": content, "parent_folder": parent_folder},
-        )
+    async def save_document(
+        self,
+        document_type: str,
+        title: str,
+        content: str,
+        urn: Optional[str] = None,
+        topics: Optional[list[str]] = None,
+        related_documents: Optional[list[str]] = None,
+        related_assets: Optional[list[str]] = None,
+    ) -> Any:
+        """
+        Matches the real mcp-server-datahub save_document tool signature
+        (verified 2026-07-13 against mcp-server-datahub==0.6.0 source,
+        tools/save_document.py): there is no `parent_folder` parameter
+        -- an earlier version of this method invented one, which would
+        have failed the same way add_structured_properties did before
+        it was fixed. The real tool places every saved document under
+        an automatically-managed parent folder server-side.
+
+        `related_assets` is what makes a saved document appear on a
+        dataset's own page in the DataHub UI (not just findable via
+        search) -- pass the entity URN there to link the document back
+        to the asset it describes.
+        """
+        arguments: dict[str, Any] = {
+            "document_type": document_type,
+            "title": title,
+            "content": content,
+        }
+        if urn is not None:
+            arguments["urn"] = urn
+        if topics is not None:
+            arguments["topics"] = topics
+        if related_documents is not None:
+            arguments["related_documents"] = related_documents
+        if related_assets is not None:
+            arguments["related_assets"] = related_assets
+        return await self.call("save_document", arguments)
