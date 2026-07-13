@@ -9,10 +9,10 @@ is thin or contradictory and leaving a capsule about it.
 
 Two finding strategies are implemented here:
 
-  - documentation_gap  : schema/lineage exists but has no description,
-                         or the description is stale relative to lineage
-  - query_drift        : columns that are heavily queried but undocumented,
-                         or documented columns nobody actually queries
+  - documentation_gap  : an entity's existing description may be stale
+                         relative to its current schema/lineage (uses
+                         an LLM call — see _find_documentation_gaps)
+  - query_drift        : columns that are heavily queried but undocumented
 
 This is intentionally two strategies, not five — a hackathon judge can
 verify both in the time they have. DEVELOPMENT_NOTES.md lists the
@@ -23,7 +23,9 @@ for you to extend if time allows.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -43,6 +45,24 @@ AGENT_ID = "cairn-sentinel-v1"
 # shapes below. Not yet tuned against a large real-world query corpus —
 # treat as a reasonable starting default, not a validated threshold.
 QUERY_DRIFT_MIN_FRACTION = 0.3
+
+# Below this finding_confidence, a documentation_gap candidate is
+# dropped rather than surfaced — a low-confidence "maybe it's stale"
+# isn't worth a capsule (the governance gate would likely block it
+# anyway at the default 0.55 threshold, but filtering here avoids an
+# unnecessary LLM-to-governance round trip being logged as a "finding").
+DOC_GAP_MIN_CONFIDENCE = 0.3
+
+# anthropic is an OPTIONAL dependency: only _find_documentation_gaps
+# needs it, and that strategy already degrades gracefully (logs +
+# returns no findings) when ANTHROPIC_API_KEY isn't set. Importing it
+# at module level (rather than inside the function) means tests can
+# monkeypatch `cairn.agent.anthropic` directly instead of having to
+# patch sys.modules before import.
+try:
+    import anthropic
+except ImportError:  # pragma: no cover — exercised via monkeypatch in tests
+    anthropic = None  # type: ignore[assignment]
 
 
 @dataclass
@@ -76,8 +96,6 @@ def _structured(result: Any) -> dict:
     for block in content:
         text = getattr(block, "text", None)
         if text:
-            import json
-
             try:
                 return json.loads(text)
             except (json.JSONDecodeError, TypeError):
@@ -102,26 +120,174 @@ class Sentinel:
         entity = await self.client.get_entities([urn])
         schema_fields = await self.client.list_schema_fields(urn)
         queries = await self.client.get_dataset_queries(urn)
+        lineage = await self.client.get_lineage(urn)
 
-        findings.extend(self._find_documentation_gaps(urn, entity, schema_fields))
+        findings.extend(self._find_documentation_gaps(urn, entity, schema_fields, lineage))
         findings.extend(self._find_query_drift(urn, schema_fields, queries))
 
         return findings
 
     # --- Strategy 1: documentation gaps --------------------------------
 
-    def _find_documentation_gaps(self, urn: str, entity, schema_fields) -> list[RawFinding]:
+    def _find_documentation_gaps(
+        self, urn: str, entity, schema_fields, lineage=None
+    ) -> list[RawFinding]:
         """
-        NOTE: This is where an LLM call would normally sit — comparing
-        the entity's existing description/glossary terms against its
-        actual schema and lineage to judge whether the documentation is
-        current. Wire in your LLM_PROVIDER call here (see
-        DEVELOPMENT_NOTES.md for a starting prompt). Left as a clear
-        stub rather than a fake result so the scaffold doesn't pretend
-        to have tested reasoning it hasn't.
+        Compares an entity's existing description against its current
+        schema fields and lineage, using an LLM call to judge whether
+        the description still accurately reflects what the dataset
+        contains and where it comes from.
+
+        This is deliberately the ONE place in Cairn that calls an LLM —
+        this specific judgment (does free text still match the current
+        technical reality?) needs judgment, not a diff, unlike
+        _find_query_drift below.
+
+        Degrades gracefully — logs and returns no findings — if:
+          - ANTHROPIC_API_KEY isn't set (see .env.example)
+          - the `anthropic` package isn't installed (optional dependency;
+            `pip install anthropic` to enable this strategy)
+          - the entity has no existing description at all (an
+            undocumented dataset is a different, simpler signal than a
+            *stale* one — out of scope for this strategy; see the
+            docstring note further down)
+          - the LLM call or its response parsing fails for any reason
+
+        Response shape for get_entities confirmed 2026-07-13 against a
+        live self-hosted mcp-server-datahub v0.6.0 instance: the
+        structured result is {"result": [{"urn": ..., "name": ...,
+        "description": "...", "platform": {...}, "ownership": {...},
+        "schemaMetadata": {...}, ...}]}. The top-level "description" key
+        (dataset-level, distinct from per-field descriptions in
+        list_schema_fields) is what's used here.
+
+        The exact shape of get_lineage's response was NOT independently
+        verified against the running instance the way get_entities and
+        list_schema_fields were — rather than guess at specific field
+        names and risk silently mis-parsing it, the raw structured
+        response is passed into the LLM prompt as JSON text. The model
+        reads it as context; this code never parses lineage fields
+        directly, so an unexpected shape there degrades the quality of
+        the model's judgment rather than crashing this function.
         """
-        logger.info("documentation_gap strategy: stub — wire in LLM reasoning here")
-        return []
+        api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+        if not api_key:
+            logger.info(
+                "documentation_gap: skipping %s (ANTHROPIC_API_KEY not set "
+                "— see .env.example)",
+                urn,
+            )
+            return []
+
+        if anthropic is None:
+            logger.warning(
+                "documentation_gap: skipping %s (the 'anthropic' package "
+                "isn't installed — run `pip install anthropic`)",
+                urn,
+            )
+            return []
+
+        entity_results = _structured(entity).get("result", [])
+        if not entity_results:
+            logger.info("documentation_gap: skipping %s (no entity data returned)", urn)
+            return []
+
+        description = (entity_results[0].get("description") or "").strip()
+        if not description:
+            logger.info(
+                "documentation_gap: skipping %s (no existing description to "
+                "check for staleness — an undocumented dataset is a "
+                "different signal than a stale one)",
+                urn,
+            )
+            return []
+
+        fields = _structured(schema_fields).get("fields", [])
+        field_summary = ", ".join(f.get("fieldPath", "?") for f in fields) or "(no fields returned)"
+
+        lineage_data = _structured(lineage) if lineage is not None else {}
+        lineage_summary = (
+            json.dumps(lineage_data, default=str)[:2000]
+            if lineage_data
+            else "(no lineage data available)"
+        )
+
+        prompt = (
+            "You are reviewing metadata documentation for a dataset in a "
+            "data catalog.\n\n"
+            f"Current description: {description!r}\n\n"
+            f"Current schema fields: {field_summary}\n\n"
+            f"Upstream/downstream lineage (raw JSON, may be partial or "
+            f"empty): {lineage_summary}\n\n"
+            "Does the description still accurately describe what this "
+            "dataset contains and where it comes from, based on the "
+            "schema and lineage above? Respond with ONLY a JSON object, "
+            "no other text, in exactly this shape:\n"
+            '{"confidence": <float 0.0-1.0, your confidence the '
+            'description is CURRENT and accurate>, "gap": <string, the '
+            "specific mismatch you found, or empty string if none>}"
+        )
+
+        # Model default reflects Anthropic's current lineup as of this
+        # writing (2026-07). Verify against https://docs.claude.com
+        # before a demo — Anthropic's model lineup changes over time and
+        # this default can go stale. Override via ANTHROPIC_MODEL if
+        # you'd rather use a cheaper/faster model for this classification-
+        # style task.
+        model = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5")
+
+        try:
+            client = anthropic.Anthropic(api_key=api_key)
+            response = client.messages.create(
+                model=model,
+                max_tokens=300,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw_text = "".join(
+                block.text
+                for block in response.content
+                if getattr(block, "type", None) == "text"
+            )
+            parsed = json.loads(raw_text)
+            confidence_description_is_current = float(parsed.get("confidence", 1.0))
+            gap = (parsed.get("gap") or "").strip()
+        except Exception as exc:
+            # Broad except is deliberate here: an LLM call can fail in
+            # many ways (network, auth, rate limit, malformed JSON in
+            # the response) and none of them should crash the whole
+            # inspection run — just skip this strategy for this dataset.
+            logger.warning("documentation_gap: LLM call/parsing failed for %s: %s", urn, exc)
+            return []
+
+        # We asked the model for its confidence the description IS
+        # current. Cairn's finding confidence is about the finding
+        # itself (i.e. confidence a gap EXISTS), which is the inverse.
+        finding_confidence = round(1.0 - confidence_description_is_current, 2)
+
+        if not gap or finding_confidence < DOC_GAP_MIN_CONFIDENCE:
+            logger.info(
+                "documentation_gap: %s — no significant gap found (model "
+                "confidence description is current: %.2f)",
+                urn,
+                confidence_description_is_current,
+            )
+            return []
+
+        return [
+            RawFinding(
+                entity_urn=urn,
+                finding_type=FindingType.DOCUMENTATION_GAP,
+                confidence=finding_confidence,
+                summary="description may be stale relative to schema/lineage",
+                unresolved_questions=[gap],
+                assumptions_made=[
+                    f"Used {model} to compare the existing description "
+                    f"against current schema fields and lineage; did not "
+                    f"verify against the underlying source system's own "
+                    f"documentation."
+                ],
+            )
+        ]
 
     # --- Strategy 2: query drift ----------------------------------------
 

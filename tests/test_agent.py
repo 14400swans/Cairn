@@ -1,15 +1,24 @@
 """
-Unit tests for Sentinel._find_query_drift() — the one piece of agent.py
-that involves actual reasoning logic rather than pure orchestration.
+Unit tests for Sentinel._find_query_drift() and
+Sentinel._find_documentation_gaps() — the two pieces of agent.py that
+involve actual reasoning logic rather than pure orchestration.
 
-Why mock data instead of a live DataHub connection: the healthcare/
-quickstart sample pack turned out not to contain any dataset with both
-undocumented fields AND query history at the same time (verified
-manually against a running instance on 2026-07-13 — see
+Why mock data instead of a live DataHub connection for query_drift: the
+healthcare/quickstart sample pack turned out not to contain any dataset
+with both undocumented fields AND query history at the same time
+(verified manually against a running instance on 2026-07-13 — see
 DEVELOPMENT_NOTES.md). Rather than depend on a live instance having the
 right shape of data at demo time, this constructs mock MCP responses
 matching the exact structure confirmed against a real
 mcp-server-datahub v0.6.0 instance, and tests the diffing logic directly.
+
+Why the anthropic client is monkeypatched for documentation_gap tests:
+this strategy makes a real LLM call in production, but tests should
+never depend on network access, a real API key, or non-deterministic
+model output. `cairn.agent.anthropic` is monkeypatched to a fake module
+exposing a fake `Anthropic` class, so the tests exercise Cairn's own
+prompt-building, response-parsing, and confidence-inversion logic
+without ever calling out to Anthropic's API.
 
 Run with: pytest tests/test_agent.py -v
 """
@@ -17,6 +26,8 @@ Run with: pytest tests/test_agent.py -v
 from __future__ import annotations
 
 from types import SimpleNamespace
+
+import pytest
 
 from cairn.agent import Sentinel, _structured
 from cairn.capsule import FindingType
@@ -30,6 +41,13 @@ def _mock_tool_result(structured_content: dict):
     fallback path is exercised separately below.
     """
     return SimpleNamespace(structuredContent=structured_content, content=[])
+
+
+def make_sentinel() -> Sentinel:
+    # Neither strategy under test here touches self.client or self.gate
+    # directly, so both can be None — only the pure reasoning logic is
+    # under test.
+    return Sentinel(client=None, gate=None)  # type: ignore[arg-type]
 
 
 # --- _structured() extraction --------------------------------------------
@@ -74,13 +92,6 @@ def make_queries(statements: list[str]):
     return _mock_tool_result(
         {"start": 0, "total": len(queries), "count": 10, "queries": queries}
     )
-
-
-def make_sentinel() -> Sentinel:
-    # _find_query_drift doesn't touch self.client or self.gate, so both
-    # can be None for this unit test — only the pure diffing logic is
-    # under test here.
-    return Sentinel(client=None, gate=None)  # type: ignore[arg-type]
 
 
 def test_flags_undocumented_heavily_queried_column():
@@ -186,3 +197,186 @@ def test_word_boundary_avoids_substring_false_positive():
     findings = sentinel._find_query_drift("urn:li:dataset:(test,ds,PROD)", schema_fields, queries)
 
     assert findings == []
+
+
+# --- _find_documentation_gaps() -------------------------------------------
+
+
+def make_entity(description):
+    return _mock_tool_result(
+        {
+            "result": [
+                {
+                    "urn": "urn:li:dataset:(test,ds,PROD)",
+                    "name": "ds",
+                    "description": description,
+                }
+            ]
+        }
+    )
+
+
+class _FakeTextBlock:
+    def __init__(self, text):
+        self.type = "text"
+        self.text = text
+
+
+class _FakeMessage:
+    def __init__(self, text):
+        self.content = [_FakeTextBlock(text)]
+
+
+class _FakeMessages:
+    def __init__(self, response_text):
+        self._response_text = response_text
+        self.last_call_kwargs = None
+
+    def create(self, **kwargs):
+        self.last_call_kwargs = kwargs
+        return _FakeMessage(self._response_text)
+
+
+class _FakeAnthropicClient:
+    def __init__(self, response_text, api_key=None):
+        self.messages = _FakeMessages(response_text)
+
+
+def _install_fake_anthropic(monkeypatch, response_text):
+    """
+    Monkeypatch cairn.agent.anthropic to a fake module whose Anthropic()
+    constructor returns a client wired to return `response_text` from
+    messages.create(). Returns a dict that will hold the constructed
+    client so tests can inspect what prompt/model was actually sent.
+    """
+    captured = {}
+
+    def fake_anthropic_constructor(api_key=None):
+        client = _FakeAnthropicClient(response_text, api_key=api_key)
+        captured["client"] = client
+        return client
+
+    fake_module = SimpleNamespace(Anthropic=fake_anthropic_constructor)
+    monkeypatch.setattr("cairn.agent.anthropic", fake_module)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    return captured
+
+
+def test_doc_gap_skips_without_api_key(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    sentinel = make_sentinel()
+    entity = make_entity("Some description")
+    schema_fields = make_schema_fields([{"fieldPath": "x", "description": None}])
+
+    findings = sentinel._find_documentation_gaps(
+        "urn:li:dataset:(test,ds,PROD)", entity, schema_fields, None
+    )
+
+    assert findings == []
+
+
+def test_doc_gap_skips_without_anthropic_package(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    monkeypatch.setattr("cairn.agent.anthropic", None)
+    sentinel = make_sentinel()
+    entity = make_entity("Some description")
+    schema_fields = make_schema_fields([{"fieldPath": "x", "description": None}])
+
+    findings = sentinel._find_documentation_gaps(
+        "urn:li:dataset:(test,ds,PROD)", entity, schema_fields, None
+    )
+
+    assert findings == []
+
+
+def test_doc_gap_skips_entity_with_no_description(monkeypatch):
+    captured = _install_fake_anthropic(monkeypatch, '{"confidence": 0.2, "gap": "whatever"}')
+    sentinel = make_sentinel()
+    entity = make_entity(None)
+    schema_fields = make_schema_fields([{"fieldPath": "x", "description": None}])
+
+    findings = sentinel._find_documentation_gaps(
+        "urn:li:dataset:(test,ds,PROD)", entity, schema_fields, None
+    )
+
+    assert findings == []
+    # Should not even have called the LLM — no description to check.
+    assert "client" not in captured
+
+
+def test_doc_gap_flags_stale_description(monkeypatch):
+    """
+    The model reports low confidence the description is current — Cairn
+    should invert that into a high finding confidence and surface the
+    gap it identified.
+    """
+    _install_fake_anthropic(
+        monkeypatch,
+        '{"confidence": 0.1, "gap": "Description mentions daily batch loads but schema now shows real-time streaming fields."}',
+    )
+    sentinel = make_sentinel()
+    entity = make_entity("Loaded once per day via nightly batch job.")
+    schema_fields = make_schema_fields(
+        [{"fieldPath": "event_ts", "nativeDataType": "timestamp", "description": "Streaming event timestamp"}]
+    )
+
+    findings = sentinel._find_documentation_gaps(
+        "urn:li:dataset:(test,ds,PROD)", entity, schema_fields, None
+    )
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.finding_type == FindingType.DOCUMENTATION_GAP
+    assert finding.confidence == pytest.approx(0.9, abs=0.01)  # round(1 - 0.1, 2)
+    assert "real-time streaming" in finding.unresolved_questions[0]
+    assert any("sonnet" in a.lower() for a in finding.assumptions_made)
+
+
+def test_doc_gap_does_not_flag_current_description(monkeypatch):
+    _install_fake_anthropic(monkeypatch, '{"confidence": 0.95, "gap": ""}')
+    sentinel = make_sentinel()
+    entity = make_entity("Accurate, up-to-date description.")
+    schema_fields = make_schema_fields([{"fieldPath": "x", "description": "documented"}])
+
+    findings = sentinel._find_documentation_gaps(
+        "urn:li:dataset:(test,ds,PROD)", entity, schema_fields, None
+    )
+
+    assert findings == []
+
+
+def test_doc_gap_handles_malformed_llm_response(monkeypatch):
+    """If the model doesn't return valid JSON, Cairn should log and
+    skip rather than crash the whole inspection run."""
+    _install_fake_anthropic(monkeypatch, "Sorry, I can't help with that in JSON form.")
+    sentinel = make_sentinel()
+    entity = make_entity("Some description.")
+    schema_fields = make_schema_fields([{"fieldPath": "x", "description": None}])
+
+    findings = sentinel._find_documentation_gaps(
+        "urn:li:dataset:(test,ds,PROD)", entity, schema_fields, None
+    )
+
+    assert findings == []
+
+
+def test_doc_gap_passes_lineage_as_context_without_parsing(monkeypatch):
+    """
+    Lineage's exact shape wasn't independently verified against a live
+    instance (unlike get_entities / list_schema_fields), so it should
+    be passed into the prompt as raw JSON rather than field-parsed —
+    this test pins that contract down.
+    """
+    captured = _install_fake_anthropic(monkeypatch, '{"confidence": 0.8, "gap": ""}')
+    sentinel = make_sentinel()
+    entity = make_entity("Some description.")
+    schema_fields = make_schema_fields([{"fieldPath": "x", "description": "documented"}])
+    lineage = _mock_tool_result({"some_unverified_shape": {"upstreams": ["urn:li:dataset:(test,upstream,PROD)"]}})
+
+    sentinel._find_documentation_gaps(
+        "urn:li:dataset:(test,ds,PROD)", entity, schema_fields, lineage
+    )
+
+    sent_prompt = captured["client"].messages.last_call_kwargs["messages"][0]["content"]
+    assert "some_unverified_shape" in sent_prompt
+    assert "urn:li:dataset:(test,upstream,PROD)" in sent_prompt
