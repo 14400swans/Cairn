@@ -28,11 +28,20 @@ Cairn is a DataHub agent with three cooperating parts:
 
 1. **Sentinel** — inspects a dataset (schema, lineage, description, query
    history) and produces *findings*: gaps between what is documented and
-   what the data / query patterns actually show.
+   what the data / query patterns actually show. Two strategies are
+   implemented: `query_drift` (heavily queried but undocumented columns)
+   and `documentation_gap` (an existing description that may be stale
+   relative to current schema/lineage — this one uses a single LLM call
+   and degrades gracefully, producing no findings rather than erroring,
+   if `ANTHROPIC_API_KEY` isn't set).
 2. **Capsule writer** — instead of writing free-text guesses back into
    DataHub, Cairn writes a small **structured handoff capsule** using
    DataHub's `structured_properties` — machine-readable fields any other
-   agent can read programmatically, not just a human.
+   agent can read programmatically, not just a human. Alongside that,
+   Cairn also saves a short, human-readable **reflection document**
+   (via `save_document`) linked to the dataset, so a person skimming the
+   dataset page in the DataHub UI sees Cairn's contribution too, not
+   only an agent parsing the Props tab.
 3. **Governance gate** — Cairn does **not** write back every finding it
    makes. Writes are rate-limited, confidence-gated, and cooled down per
    entity, so Cairn behaves like a careful colleague, not a bot that
@@ -67,7 +76,9 @@ downstream agent to parse:
 
 See `examples/sample_capsule.json` for a full example, and
 `examples/sample_finding.json` for what a raw finding looks like before
-it becomes a capsule.
+it becomes a capsule. **Both examples are captured from a real run**
+against a live, self-hosted DataHub instance (2026-07-14) — not
+hand-constructed illustrations.
 
 ## Governed write-back
 
@@ -81,7 +92,11 @@ Cairn will refuse to write if any of these hold:
 
 This is deliberate: a hackathon judge should be able to see, in the demo
 video, that Cairn *chose not to write* on a low-confidence finding — that
-restraint is the point, not a limitation.
+restraint is the point, not a limitation. This has been confirmed
+working end-to-end against a live instance: a high-confidence finding is
+written (both as structured properties and a reflection document) while
+a low-confidence finding in the same run is skipped with a logged
+reason.
 
 ## Architecture
 
@@ -100,30 +115,48 @@ restraint is the point, not a limitation.
                           ▼
                  ┌─────────────────┐
                  │  Capsule writer  │  builds structured_properties payload
-                 │  (capsule.py)    │
+                 │  (capsule.py)    │  + a short human-readable reflection doc
                  └────────┬─────────┘
                           │
                           ▼
                  DataHub (via MCP Server)
-                 add_structured_properties / update_description / save_document
+                 add_structured_properties  → io.cairn.* fields (Props tab)
+                 save_document               → linked Context doc (Documentation tab)
 ```
 
 ## Status of this code
 
-This is a **working scaffold**, written from scratch for this hackathon
-submission period. It is *not* pre-tested against a live DataHub
-instance — you will need to:
+This has been **built and verified against a live, self-hosted DataHub
+quickstart instance** (2026-07-14) — not just written and assumed to
+work. Along the way, three real integration bugs were found by reading
+the actual `mcp-server-datahub` tool source and testing live writes,
+then fixed and covered by regression tests:
 
-1. Run `datahub docker quickstart` and load the `healthcare` sample pack
-2. Set `TOOLS_IS_MUTATION_ENABLED=true` on your MCP server (writes are
-   disabled by default — see DataHub MCP Server docs)
-3. Fill in `.env` from `.env.example`
-4. Run `datahub properties upsert -f datahub/structured_properties.yaml`
-   to register the `io.cairn.*` property types (one-time step)
-5. Adjust `cairn/mcp_client.py` if your MCP transport (stdio vs. HTTP)
-   differs from the default assumed here
+- `add_structured_properties` originally sent the wrong payload shape
+  (a flat `{urn, structured_properties}` object instead of the real
+  tool's `{property_values, entity_urns}` signature).
+- `io.cairn.sessionTimestamp` is registered as a `date`-type property,
+  which DataHub validates strictly as `YYYY-MM-DD` — a full ISO 8601
+  datetime was rejected server-side until this was fixed.
+- `save_document` originally used an invented `parent_folder` parameter
+  that doesn't exist on the real tool.
 
-See `DEVELOPMENT_NOTES.md` for known gaps and what to build out first.
+`mcp_client.py`'s `call()` method also now checks the MCP tool result's
+`isError` field — earlier, a server-side write failure was silently
+treated as success, which could have poisoned governance's cooldown
+state for a write that never actually happened. See
+`DEVELOPMENT_NOTES.md` for the full account of each bug and fix.
+
+**Confirmed working live**, including a fully independent (not
+hand-seeded) finding: `Sentinel._find_query_drift` found an undocumented,
+heavily-queried `browser` column on a `logging_events` dataset in a
+default `datahub docker quickstart` instance, and Cairn wrote both a
+structured-property capsule and a linked reflection document for it
+without any human constructing the finding by hand.
+
+`documentation_gap` (the LLM-based strategy) is implemented and unit
+tested, but has not yet been run against live data, since that requires
+an `ANTHROPIC_API_KEY`.
 
 ## Quickstart
 
@@ -137,10 +170,19 @@ local DataHub instance).
 > works fine on 3.10+, but if you hit strange `datahub` CLI behavior,
 > try Python 3.11 specifically for the CLI steps below.
 
+> **Verified note:** a default `datahub docker quickstart` instance does
+> **not** come with a `healthcare` sample pack — only the generic
+> `Sample*Dataset` entities (e.g. `SampleHiveDataset`) plus a handful of
+> unrelated demo assets (`fct_users_created`, `logging_events`, etc.).
+> Search your own instance's UI (`localhost:9002`) for a dataset with an
+> undocumented column to try `query_drift` against, rather than assuming
+> `healthcare.*` exists.
+
 ```bash
 python -m venv .venv && source .venv/bin/activate     # macOS/Linux
 python -m venv .venv && .venv\Scripts\activate         # Windows
 pip install -r requirements.txt
+pip install -e .
 
 # Install the DataHub CLI itself (separate from this project's own
 # dependencies above -- this is what provides the `datahub` command
@@ -154,14 +196,21 @@ cp .env.example .env   # fill in your DataHub MCP endpoint + token
 # (`datahub properties --help`) -- this surface has changed across releases.
 datahub properties upsert -f datahub/structured_properties.yaml
 
-python -m cairn.cli --dataset-urn "urn:li:dataset:(urn:li:dataPlatform:snowflake,healthcare.patient_records,PROD)"
+# Start the MCP server with writes enabled (in its own terminal --
+# it stays running). Watch its startup log for which port it actually
+# binds to (commonly 8000, not always the DataHub-Cloud-default 8080)
+# and make sure DATAHUB_MCP_URL in .env matches it.
+TOOLS_IS_MUTATION_ENABLED=true uvx mcp-server-datahub --transport http
+
+# In a second terminal:
+python -m cairn.cli --dataset-urn "urn:li:dataset:(urn:li:dataPlatform:hive,logging_events,PROD)"
 ```
 
 ### Running the tests
 
-`capsule.py` and `governance.py` are fully implemented and covered by
-unit tests that need **no DataHub connection at all** — a good first
-check that your environment is set up correctly:
+`capsule.py`, `governance.py`, and `agent.py` are fully covered by unit
+tests that need **no DataHub connection at all** — a good first check
+that your environment is set up correctly:
 
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
