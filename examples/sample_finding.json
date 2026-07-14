@@ -1,13 +1,13 @@
 {
-  "entity_urn": "urn:li:dataset:(urn:li:dataPlatform:snowflake,healthcare.patient_vitals,PROD)",
+  "entity_urn": "urn:li:dataset:(urn:li:dataPlatform:hive,logging_events,PROD)",
   "finding_type": "query_drift",
-  "confidence": 0.81,
-  "summary": "heavily queried, undocumented column",
+  "confidence": 0.9,
+  "summary": "heavily queried, undocumented column: browser",
   "unresolved_questions": [
-    "Column `flag_override` appears in 34 of the last 50 queries against this table, but has no description, no glossary term, and no owner comment. What does an override flag of 2 mean versus 1?"
+    "Column `browser` appears in 1 of 1 known queries against this dataset but has no description. What does it represent, and who should own documenting it?"
   ],
   "assumptions_made": [
-    "Assumed `flag_override` is not a system-generated audit column, based on naming convention only — not confirmed against source system docs."
+    "Detected usage of `browser` via a word-boundary text match against raw SQL statement text, not a parsed AST — aliased references or SELECT * usage may be undercounted, and unrelated substring matches may be overcounted."
   ],
-  "note": "This is a fabricated example for illustration. It shows the shape of output Cairn produces, not a verified finding from a live DataHub instance."
+  "note": "Captured from a real Sentinel.inspect_dataset() run against a live, self-hosted DataHub quickstart instance on 2026-07-14 — this is the raw finding _find_query_drift produced before it became a capsule, not a fabricated example. Verify with `python probe_sentinel.py \"urn:li:dataset:(urn:li:dataPlatform:hive,logging_events,PROD)\"` against your own instance."
 }

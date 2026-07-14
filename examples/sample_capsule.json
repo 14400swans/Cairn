@@ -1,16 +1,16 @@
 {
   "agent_id": "cairn-sentinel-v1",
-  "entity_urn": "urn:li:dataset:(urn:li:dataPlatform:snowflake,healthcare.patient_vitals,PROD)",
+  "entity_urn": "urn:li:dataset:(urn:li:dataPlatform:hive,logging_events,PROD)",
   "finding_type": "query_drift",
-  "confidence": 0.81,
-  "summary": "heavily queried, undocumented column",
+  "confidence": 0.9,
+  "summary": "heavily queried, undocumented column: browser",
   "unresolved_questions": [
-    "Column `flag_override` appears in 34 of the last 50 queries against this table, but has no description, no glossary term, and no owner comment. What does an override flag of 2 mean versus 1?"
+    "Column `browser` appears in 1 of 1 known queries against this dataset but has no description. What does it represent, and who should own documenting it?"
   ],
   "assumptions_made": [
-    "Assumed `flag_override` is not a system-generated audit column, based on naming convention only — not confirmed against source system docs."
+    "Detected usage of `browser` via a word-boundary text match against raw SQL statement text, not a parsed AST — aliased references or SELECT * usage may be undercounted, and unrelated substring matches may be overcounted."
   ],
   "requires_human_review": true,
-  "session_ts": "2026-07-20T14:32:00+00:00",
-  "note": "Fabricated example — illustrates the exact payload shape written via add_structured_properties, not a captured run against a live instance."
+  "session_ts": "2026-07-14T12:05:11+00:00",
+  "note": "Captured from a real run against a live, self-hosted DataHub quickstart instance on 2026-07-14 (python -m cairn.cli --dataset-urn ...), not a fabricated example. Sentinel found this finding independently via _find_query_drift; it was not seeded or hand-constructed. session_ts is reconstructed from the MCP server's request log timestamp, since the capsule's own timestamp isn't printed to stdout during a normal run."
 }
