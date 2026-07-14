@@ -1,23 +1,6 @@
 """
 agent.py — The Sentinel: Cairn's core inspection loop.
-
-Follows the read-before-write priority order documented by DataHub's own
-Analytics Agent (search context -> discover datasets -> inspect schema
--> check lineage -> review query history -> only then write), applied to
-a different goal: not answering a question, but noticing where context
-is thin or contradictory and leaving a capsule about it.
-
-Two finding strategies are implemented here:
-
-  - documentation_gap  : an entity's existing description may be stale
-                         relative to its current schema/lineage (uses
-                         an LLM call — see _find_documentation_gaps)
-  - query_drift        : columns that are heavily queried but undocumented
-
-This is intentionally two strategies, not five — a hackathon judge can
-verify both in the time they have. DEVELOPMENT_NOTES.md lists the
-lineage_break and ownership_stale strategies as scaffolded-but-not-wired,
-for you to extend if time allows.
+(uploaded version, for testing purposes)
 """
 
 from __future__ import annotations
@@ -38,30 +21,12 @@ logger = logging.getLogger("cairn.agent")
 
 AGENT_ID = "cairn-sentinel-v1"
 
-# A field must appear in at least this fraction of a dataset's known
-# queries before it's considered "heavily queried" for drift purposes.
-# Verified against a live mcp-server-datahub v0.6.0 instance on
-# 2026-07-13 (self-hosted, --transport http): see structured response
-# shapes below. Not yet tuned against a large real-world query corpus —
-# treat as a reasonable starting default, not a validated threshold.
 QUERY_DRIFT_MIN_FRACTION = 0.3
-
-# Below this finding_confidence, a documentation_gap candidate is
-# dropped rather than surfaced — a low-confidence "maybe it's stale"
-# isn't worth a capsule (the governance gate would likely block it
-# anyway at the default 0.55 threshold, but filtering here avoids an
-# unnecessary LLM-to-governance round trip being logged as a "finding").
 DOC_GAP_MIN_CONFIDENCE = 0.3
 
-# anthropic is an OPTIONAL dependency: only _find_documentation_gaps
-# needs it, and that strategy already degrades gracefully (logs +
-# returns no findings) when ANTHROPIC_API_KEY isn't set. Importing it
-# at module level (rather than inside the function) means tests can
-# monkeypatch `cairn.agent.anthropic` directly instead of having to
-# patch sys.modules before import.
 try:
     import anthropic
-except ImportError:  # pragma: no cover — exercised via monkeypatch in tests
+except ImportError:  # pragma: no cover
     anthropic = None  # type: ignore[assignment]
 
 
@@ -76,18 +41,6 @@ class RawFinding:
 
 
 def _structured(result: Any) -> dict:
-    """
-    Normalize an mcp-server-datahub tool result down to a plain dict.
-
-    Verified 2026-07-13 against a live self-hosted mcp-server-datahub
-    v0.6.0 instance (--transport http): client.call_tool() returns an
-    object exposing both `.content` (a list of TextContent blocks with
-    the same payload as a JSON string) and `.structuredContent` (the
-    same payload already parsed into a dict). This prefers
-    structuredContent and falls back to parsing the first text block,
-    so it degrades gracefully if a different mcp-server-datahub version
-    ever stops populating structuredContent.
-    """
     structured = getattr(result, "structuredContent", None)
     if isinstance(structured, dict):
         return structured
@@ -111,10 +64,6 @@ class Sentinel:
         self.gate = gate
 
     async def inspect_dataset(self, urn: str) -> list[RawFinding]:
-        """
-        Run both finding strategies against one dataset and return raw
-        findings (before governance filtering).
-        """
         findings: list[RawFinding] = []
 
         entity = await self.client.get_entities([urn])
@@ -127,64 +76,16 @@ class Sentinel:
 
         return findings
 
-    # --- Strategy 1: documentation gaps --------------------------------
-
     def _find_documentation_gaps(
         self, urn: str, entity, schema_fields, lineage=None
     ) -> list[RawFinding]:
-        """
-        Compares an entity's existing description against its current
-        schema fields and lineage, using an LLM call to judge whether
-        the description still accurately reflects what the dataset
-        contains and where it comes from.
-
-        This is deliberately the ONE place in Cairn that calls an LLM —
-        this specific judgment (does free text still match the current
-        technical reality?) needs judgment, not a diff, unlike
-        _find_query_drift below.
-
-        Degrades gracefully — logs and returns no findings — if:
-          - ANTHROPIC_API_KEY isn't set (see .env.example)
-          - the `anthropic` package isn't installed (optional dependency;
-            `pip install anthropic` to enable this strategy)
-          - the entity has no existing description at all (an
-            undocumented dataset is a different, simpler signal than a
-            *stale* one — out of scope for this strategy; see the
-            docstring note further down)
-          - the LLM call or its response parsing fails for any reason
-
-        Response shape for get_entities confirmed 2026-07-13 against a
-        live self-hosted mcp-server-datahub v0.6.0 instance: the
-        structured result is {"result": [{"urn": ..., "name": ...,
-        "description": "...", "platform": {...}, "ownership": {...},
-        "schemaMetadata": {...}, ...}]}. The top-level "description" key
-        (dataset-level, distinct from per-field descriptions in
-        list_schema_fields) is what's used here.
-
-        The exact shape of get_lineage's response was NOT independently
-        verified against the running instance the way get_entities and
-        list_schema_fields were — rather than guess at specific field
-        names and risk silently mis-parsing it, the raw structured
-        response is passed into the LLM prompt as JSON text. The model
-        reads it as context; this code never parses lineage fields
-        directly, so an unexpected shape there degrades the quality of
-        the model's judgment rather than crashing this function.
-        """
         api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
         if not api_key:
-            logger.info(
-                "documentation_gap: skipping %s (ANTHROPIC_API_KEY not set "
-                "— see .env.example)",
-                urn,
-            )
+            logger.info("documentation_gap: skipping %s (ANTHROPIC_API_KEY not set)", urn)
             return []
 
         if anthropic is None:
-            logger.warning(
-                "documentation_gap: skipping %s (the 'anthropic' package "
-                "isn't installed — run `pip install anthropic`)",
-                urn,
-            )
+            logger.warning("documentation_gap: skipping %s (anthropic not installed)", urn)
             return []
 
         entity_results = _structured(entity).get("result", [])
@@ -194,12 +95,7 @@ class Sentinel:
 
         description = (entity_results[0].get("description") or "").strip()
         if not description:
-            logger.info(
-                "documentation_gap: skipping %s (no existing description to "
-                "check for staleness — an undocumented dataset is a "
-                "different signal than a stale one)",
-                urn,
-            )
+            logger.info("documentation_gap: skipping %s (no existing description)", urn)
             return []
 
         fields = _structured(schema_fields).get("fields", [])
@@ -228,12 +124,6 @@ class Sentinel:
             "specific mismatch you found, or empty string if none>}"
         )
 
-        # Model default reflects Anthropic's current lineup as of this
-        # writing (2026-07). Verify against https://docs.claude.com
-        # before a demo — Anthropic's model lineup changes over time and
-        # this default can go stale. Override via ANTHROPIC_MODEL if
-        # you'd rather use a cheaper/faster model for this classification-
-        # style task.
         model = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5")
 
         try:
@@ -252,25 +142,13 @@ class Sentinel:
             confidence_description_is_current = float(parsed.get("confidence", 1.0))
             gap = (parsed.get("gap") or "").strip()
         except Exception as exc:
-            # Broad except is deliberate here: an LLM call can fail in
-            # many ways (network, auth, rate limit, malformed JSON in
-            # the response) and none of them should crash the whole
-            # inspection run — just skip this strategy for this dataset.
             logger.warning("documentation_gap: LLM call/parsing failed for %s: %s", urn, exc)
             return []
 
-        # We asked the model for its confidence the description IS
-        # current. Cairn's finding confidence is about the finding
-        # itself (i.e. confidence a gap EXISTS), which is the inverse.
         finding_confidence = round(1.0 - confidence_description_is_current, 2)
 
         if not gap or finding_confidence < DOC_GAP_MIN_CONFIDENCE:
-            logger.info(
-                "documentation_gap: %s — no significant gap found (model "
-                "confidence description is current: %.2f)",
-                urn,
-                confidence_description_is_current,
-            )
+            logger.info("documentation_gap: %s — no significant gap found", urn)
             return []
 
         return [
@@ -289,69 +167,15 @@ class Sentinel:
             )
         ]
 
-    # --- Strategy 2: query drift ----------------------------------------
-
     def _find_query_drift(self, urn: str, schema_fields, queries) -> list[RawFinding]:
-        """
-        Compares which columns actually appear in real queries
-        (get_dataset_queries) against which columns are documented
-        (list_schema_fields). Columns that are heavily queried but have
-        no description are flagged as drift candidates.
-
-        Response shapes verified 2026-07-13 against a live self-hosted
-        mcp-server-datahub v0.6.0 instance (--transport http) using the
-        DataHub healthcare/quickstart sample pack:
-
-          list_schema_fields(urn) -> {
-            "urn": "...",
-            "fields": [
-              {"fieldPath": "field_foo", "nativeDataType": "varchar(100)",
-               "description": "Foo field description", "nullable": false,
-               "isPartOfKey": true},
-              ...
-            ],
-            "totalFields": 2, "returned": 2, ...
-          }
-
-          get_dataset_queries(urn) -> {
-            "start": 0, "total": 1,
-            "queries": [
-              {"urn": "urn:li:query:...",
-               "properties": {
-                 "name": "TestQuery", "source": "MANUAL",
-                 "statement": {"value": "SELECT * FROM db.T WHERE field_foo = 'x'",
-                               "language": "SQL"},
-                 "lastModified": {"actor": "urn:li:corpuser:..."}
-               },
-               "subjects": [{"dataset": {"urn": "..."}}]}
-            ]
-          }
-
-        IMPORTANT: in this sample data, `subjects` only ever pointed at
-        the dataset itself, not at individual columns — even though the
-        MCP server docs mention column-level subjects are possible in
-        general. Column usage isn't reliable from `subjects` alone here,
-        so this matches column names against the raw SQL text in
-        `statement.value` instead. That's a real limitation: it will
-        miss column references hidden behind aliases or `SELECT *`, and
-        can produce false positives if a field name collides with an
-        unrelated substring elsewhere in the query (a comment, a string
-        literal, another table's column with the same name). Treat the
-        resulting confidence scores accordingly — this is a heuristic,
-        not a parsed-SQL guarantee.
-        """
         fields = _structured(schema_fields).get("fields", [])
         query_list = _structured(queries).get("queries", [])
         total_queries = len(query_list)
 
         if not fields or total_queries == 0:
-            logger.info(
-                "query_drift: skipping %s (no schema fields or no queries to compare)",
-                urn,
-            )
+            logger.info("query_drift: skipping %s (no schema fields or no queries)", urn)
             return []
 
-        # Count, for each field, how many queries reference it by name.
         field_hit_counts: dict[str, int] = {f["fieldPath"]: 0 for f in fields}
         for query in query_list:
             statement = (query.get("properties") or {}).get("statement") or {}
@@ -360,8 +184,6 @@ class Sentinel:
                 continue
             for field in fields:
                 field_path = field["fieldPath"]
-                # Word-boundary match so "field_foo" doesn't also match
-                # "field_foobar". Still a heuristic — see docstring above.
                 pattern = r"\b" + re.escape(field_path.lower()) + r"\b"
                 if re.search(pattern, sql_text):
                     field_hit_counts[field_path] += 1
@@ -375,14 +197,11 @@ class Sentinel:
             hits = field_hit_counts[field_path]
 
             if description:
-                continue  # already documented — not a drift candidate
+                continue
             if hits < min_hits_for_drift:
-                continue  # not queried often enough to flag
+                continue
 
             hit_fraction = hits / total_queries
-            # Confidence scales with how dominant the field is in the
-            # query corpus, capped below 1.0 since this is a heuristic
-            # text match, not a verified parse.
             confidence = round(min(0.9, 0.5 + hit_fraction * 0.4), 2)
 
             findings.append(
@@ -407,16 +226,7 @@ class Sentinel:
                 )
             )
 
-        logger.info(
-            "query_drift: %s produced %d finding(s) from %d field(s) / %d quer(y/ies)",
-            urn,
-            len(findings),
-            len(fields),
-            total_queries,
-        )
         return findings
-
-    # --- Governed write-back ---------------------------------------------
 
     async def process_findings(self, findings: list[RawFinding]) -> None:
         for f in findings:
@@ -432,81 +242,30 @@ class Sentinel:
 
             decision = self.gate.evaluate(capsule)
             if not decision.allowed:
-                logger.info(
-                    "SKIPPED write for %s — %s", capsule.entity_urn, decision.reason
-                )
+                logger.info("SKIPPED write for %s — %s", capsule.entity_urn, decision.reason)
                 continue
 
             payload = capsule.to_structured_properties()
             try:
                 await self.client.add_structured_properties(
-                    payload["property_values"], payload["entity_urns"]
+                    payload["urn"], payload["structured_properties"]
                 )
             except DataHubMCPError as exc:
-                # A write that DataHub itself rejects (e.g. a value type
-                # or format validation error) must NOT be recorded in
-                # governance state. Added 2026-07-13 after a live bug:
-                # mcp_client.call() used to return a server-side error
-                # result as if it were a success, which caused this
-                # branch's code to log "WROTE" and gate.record() to poison
-                # the cooldown for a write that never actually landed.
-                # Now that mcp_client.call() raises on isError, this
-                # except block is what keeps a single bad write from
-                # crashing the whole run (via run()'s outer handler) while
-                # still making the failure loud and un-recorded, so the
-                # entity is eligible to be retried on the next run instead
-                # of sitting in a false 24h cooldown.
-                logger.error(
-                    "WRITE FAILED for %s — %s", capsule.entity_urn, exc
-                )
+                logger.error("WRITE FAILED for %s — %s", capsule.entity_urn, exc)
                 continue
 
             self.gate.record(capsule)
-            logger.info(
-                "WROTE capsule for %s (confidence=%.2f)",
-                capsule.entity_urn,
-                capsule.confidence,
-            )
+            logger.info("WROTE capsule for %s (confidence=%.2f)", capsule.entity_urn, capsule.confidence)
 
-            # Also leave a human-readable reflection document alongside the
-            # machine-readable structured properties. The structured
-            # properties above are the capsule's authoritative record and
-            # what governance/cooldown state is based on; this document is
-            # a best-effort presentation layer so a person skimming the
-            # dataset page sees Cairn's contribution too, not only an agent
-            # parsing the Props tab. A failure here is logged but does not
-            # undo or hide the structured property write already recorded.
             try:
                 await self._write_reflection_document(capsule)
             except DataHubMCPError as exc:
                 logger.warning(
                     "Structured property write for %s succeeded, but the "
-                    "human-readable reflection document failed — %s",
-                    capsule.entity_urn,
-                    exc,
+                    "reflection document failed — %s", capsule.entity_urn, exc,
                 )
 
     async def _write_reflection_document(self, capsule: Capsule) -> None:
-        """
-        Save a short markdown document via save_document, linked to the
-        entity via related_assets so it surfaces on the dataset's own
-        page in the DataHub UI -- not just findable through search or
-        buried in the Props tab.
-
-        Uses document_type="Context", which matches Cairn's own framing
-        (a handoff marker for the next agent or person) among the tool's
-        fixed set of allowed types.
-
-        NOTE: save_document's own docstring says an interactive agent
-        should confirm with the user before saving. Cairn is not
-        interactive -- GovernanceGate.evaluate() (confidence threshold,
-        cooldown, per-run cap) is Cairn's equivalent confirmation
-        mechanism, already passed by the time this method is called.
-        """
-        # Datasets URNs look like "urn:li:dataset:(urn:li:dataPlatform:hive,
-        # SampleHiveDataset,PROD)" -- the human-readable name is the
-        # second-to-last comma-separated segment. Falls back to the full
-        # URN if the format doesn't match (e.g. a non-dataset entity type).
         parts = capsule.entity_urn.split(",")
         entity_name = parts[-2] if len(parts) >= 2 else capsule.entity_urn
 
@@ -548,12 +307,6 @@ async def run(dataset_urn: str) -> None:
             logger.info("Sentinel produced %d raw finding(s)", len(findings))
             await sentinel.process_findings(findings)
     except DataHubMCPError as exc:
-        # Caught here (not just in mcp_client.py) so a demo run ends with
-        # one clear, actionable line instead of a raw stack trace. Note
-        # this now only fires for connection-level failures (or a write
-        # error surfaced outside process_findings' own try/except) since
-        # per-write failures are handled and logged inside
-        # process_findings above without aborting the whole run.
         logger.error("Cairn stopped: %s", exc)
         raise SystemExit(1) from exc
 

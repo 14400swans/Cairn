@@ -129,16 +129,15 @@ class DataHubMCPClient:
         timeout, transport failure, OR a tool-level error -- with any
         token value stripped from the message first.
 
-        IMPORTANT, added 2026-07-13 after a live write bug: the MCP
-        protocol reports a tool-side failure (e.g. a server-side
-        validation error) as a normal CallToolResult with isError=True
-        and an HTTP 200 -- it does NOT raise on the transport layer.
-        This method previously returned that result as if it were a
-        success, which let a real write failure (DataHub rejected the
-        payload) get logged upstream in agent.py as "WROTE", and
-        governance.py's cooldown state got recorded for a write that
-        never actually happened. Checking isError here is what makes
-        that log line trustworthy.
+        IMPORTANT: the MCP protocol reports a tool-side failure (e.g. a
+        server-side validation error) as a normal CallToolResult with
+        isError=True and an HTTP 200 -- it does NOT raise at the
+        transport layer. Without checking isError here, a real write
+        failure (DataHub rejected the payload) would look like success
+        to callers: agent.py would log "WROTE" and governance.py's
+        cooldown state would get recorded for a write that never
+        actually happened. Checking isError here is what makes that log
+        line trustworthy.
         """
         if self._session is None:
             raise DataHubMCPError(
@@ -195,13 +194,25 @@ class DataHubMCPClient:
 
     # --- Write tools — only ever called through governance.GovernanceGate ---
 
-    async def add_structured_properties(
-        self, property_values: dict, entity_urns: list[str]
-    ) -> Any:
+    # Full structured property URNs are what the real add_structured_properties
+    # MCP tool expects as property_values keys — the qualified names alone
+    # (e.g. "io.cairn.confidence", matching structured_properties.yaml and
+    # capsule.py) aren't sufficient on their own.
+    _STRUCTURED_PROPERTY_URN_PREFIX = "urn:li:structuredProperty:"
+
+    async def add_structured_properties(self, urn: str, properties: dict) -> Any:
         """
-        Matches the real mcp-server-datahub add_structured_properties
-        tool signature exactly (verified 2026-07-13 against
-        mcp-server-datahub==0.6.0 source):
+        Public signature (urn, properties: dict[str, Any]) intentionally
+        matches capsule.py's to_structured_properties() output --
+        {"urn": ..., "structured_properties": {...}} -- keyed by the
+        short qualified names already registered via
+        datahub/structured_properties.yaml. This is pinned by
+        test_governance.py::test_capsule_structured_properties_shape, so
+        capsule.py and its caller in agent.py never need to know the
+        underlying tool's own argument shape.
+
+        Internally translates to the real mcp-server-datahub tool
+        signature:
 
             add_structured_properties(
                 property_values: Dict[str, List[Union[str, float, int]]],
@@ -209,14 +220,22 @@ class DataHubMCPClient:
             )
 
         property_values must be keyed by FULL structured property URNs
-        with each value list-wrapped, and entity_urns is always a list
-        even for a single entity. Callers should pass
-        capsule.to_structured_properties()'s two dict keys straight
-        through — see Sentinel.process_findings in agent.py.
+        with each value list-wrapped (even single values), and
+        entity_urns is always a list even for one entity. Confirm this
+        translation against your own running mcp-server-datahub
+        instance's tool schema before a demo -- this wasn't
+        independently re-verified against a live server the way
+        get_entities and list_schema_fields were.
         """
+        property_values = {
+            f"{self._STRUCTURED_PROPERTY_URN_PREFIX}{qualified_name}": (
+                value if isinstance(value, list) else [value]
+            )
+            for qualified_name, value in properties.items()
+        }
         return await self.call(
             "add_structured_properties",
-            {"property_values": property_values, "entity_urns": entity_urns},
+            {"property_values": property_values, "entity_urns": [urn]},
         )
 
     async def update_description(self, urn: str, description: str) -> Any:
@@ -235,18 +254,21 @@ class DataHubMCPClient:
         related_assets: Optional[list[str]] = None,
     ) -> Any:
         """
-        Matches the real mcp-server-datahub save_document tool signature
-        (verified 2026-07-13 against mcp-server-datahub==0.6.0 source,
-        tools/save_document.py): there is no `parent_folder` parameter
-        -- an earlier version of this method invented one, which would
-        have failed the same way add_structured_properties did before
-        it was fixed. The real tool places every saved document under
-        an automatically-managed parent folder server-side.
+        NOTE: parameter names for the underlying `save_document` MCP tool
+        (document_type / topics / related_assets / related_documents)
+        match what agent.py's _write_reflection_document sends and what
+        test_write_reflection.py pins down. There is deliberately no
+        `parent_folder` parameter here -- an earlier draft of this
+        method invented one; the real tool is understood to place saved
+        documents under an automatically-managed parent folder
+        server-side. As with add_structured_properties above, confirm
+        this against your own running instance's tool schema (e.g. via
+        your MCP client's list_tools()) before a demo.
 
-        `related_assets` is what makes a saved document appear on a
-        dataset's own page in the DataHub UI (not just findable via
-        search) -- pass the entity URN there to link the document back
-        to the asset it describes.
+        `related_assets` is what's expected to make a saved document
+        appear on a dataset's own page in the DataHub UI (not just
+        findable via search) -- pass the entity URN there to link the
+        document back to the asset it describes.
         """
         arguments: dict[str, Any] = {
             "document_type": document_type,
