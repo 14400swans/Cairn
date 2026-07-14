@@ -14,13 +14,20 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest~=8.3.3", "pytest-asyncio~=0.24.0"]
+# Only needed to enable Sentinel._find_documentation_gaps, which
+# degrades gracefully (logs + returns no findings) if this isn't
+# installed or ANTHROPIC_API_KEY isn't set -- see agent.py and
+# DEVELOPMENT_NOTES.md. Not a hard dependency of the package.
+llm = ["anthropic"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# NOTE: no async tests exist yet (test_governance.py covers only the
-# synchronous capsule.py and governance.py modules). Add
-# `asyncio_mode = "auto"` back here once you write tests against
-# agent.py / mcp_client.py.
+# asyncio_mode left at the default (strict) rather than "auto": async
+# tests do exist now (test_write_reflection.py, covering agent.py /
+# mcp_client.py) and pass fine under strict mode using explicit
+# `@pytest.mark.asyncio` markers on each test function. Switch to
+# "auto" only if you'd rather not annotate every async test
+# individually going forward.
 
 [tool.setuptools]
 # Explicit, not auto-discovered: without this, setuptools' flat-layout
