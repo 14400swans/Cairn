@@ -248,7 +248,7 @@ class Sentinel:
             payload = capsule.to_structured_properties()
             try:
                 await self.client.add_structured_properties(
-                    payload["urn"], payload["structured_properties"]
+                    payload["property_values"], payload["entity_urns"]
                 )
             except DataHubMCPError as exc:
                 logger.error("WRITE FAILED for %s — %s", capsule.entity_urn, exc)

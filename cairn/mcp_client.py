@@ -216,48 +216,24 @@ class DataHubMCPClient:
 
     # --- Write tools — only ever called through governance.GovernanceGate ---
 
-    # Full structured property URNs are what the real add_structured_properties
-    # MCP tool expects as property_values keys — the qualified names alone
-    # (e.g. "io.cairn.confidence", matching structured_properties.yaml and
-    # capsule.py) aren't sufficient on their own.
-    _STRUCTURED_PROPERTY_URN_PREFIX = "urn:li:structuredProperty:"
-
-    async def add_structured_properties(self, urn: str, properties: dict) -> Any:
+    async def add_structured_properties(
+        self, property_values: dict, entity_urns: list
+    ) -> Any:
         """
-        Public signature (urn, properties: dict[str, Any]) intentionally
-        matches capsule.py's to_structured_properties() output --
-        {"urn": ..., "structured_properties": {...}} -- keyed by the
-        short qualified names already registered via
-        datahub/structured_properties.yaml. This is pinned by
-        test_governance.py::test_capsule_structured_properties_shape, so
-        capsule.py and its caller in agent.py never need to know the
-        underlying tool's own argument shape.
-
-        Internally translates to the real mcp-server-datahub tool
-        signature:
-
-            add_structured_properties(
-                property_values: Dict[str, List[Union[str, float, int]]],
-                entity_urns: List[str],
-            )
-
-        property_values must be keyed by FULL structured property URNs
-        with each value list-wrapped (even single values), and
-        entity_urns is always a list even for one entity. Confirm this
-        translation against your own running mcp-server-datahub
-        instance's tool schema before a demo -- this wasn't
-        independently re-verified against a live server the way
-        get_entities and list_schema_fields were.
+        Thin pass-through: capsule.py's to_structured_properties() already
+        builds the exact payload the real mcp-server-datahub
+        add_structured_properties tool expects -- property_values keyed
+        by full structured property URNs (urn:li:structuredProperty:...)
+        with each value list-wrapped, and entity_urns as a list. This
+        method used to re-derive that translation itself from a
+        capsule.py that returned short qualified names, but capsule.py
+        was updated to do the translation directly -- keeping it there
+        means there is exactly one place in the codebase that knows the
+        real tool's argument shape, instead of two that have to agree.
         """
-        property_values = {
-            f"{self._STRUCTURED_PROPERTY_URN_PREFIX}{qualified_name}": (
-                value if isinstance(value, list) else [value]
-            )
-            for qualified_name, value in properties.items()
-        }
         return await self.call(
             "add_structured_properties",
-            {"property_values": property_values, "entity_urns": [urn]},
+            {"property_values": property_values, "entity_urns": entity_urns},
         )
 
     async def update_description(self, urn: str, description: str) -> Any:
