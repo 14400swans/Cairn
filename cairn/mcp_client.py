@@ -19,6 +19,7 @@ import logging
 import os
 from typing import Any, Optional
 
+import anyio
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
@@ -89,18 +90,39 @@ class DataHubMCPClient:
         self._streams_ctx: Optional[Any] = None
 
     async def __aenter__(self) -> "DataHubMCPClient":
+        """
+        NOTE, added after a real bug found running against a live
+        DataHub instance: this used to wrap self._streams_ctx.__aenter__()
+        and self._session.initialize() in asyncio.wait_for(). That looks
+        harmless but isn't -- streamablehttp_client is anyio-based, and
+        anyio's cancel scopes are tied to the specific asyncio Task they
+        were opened in. asyncio.wait_for() runs its coroutine in a new,
+        separate Task under the hood, so the cancel scope opened inside
+        __aenter__() belonged to that short-lived wait_for task -- not to
+        the outer task this object actually lives in. When __aexit__()
+        later closed the same context manager from the outer task, anyio
+        raised "Attempted to exit cancel scope in a different task than
+        it was entered in". The write itself (add_structured_properties)
+        had already succeeded by then; this only broke teardown -- but a
+        crash after "WROTE capsule" still looks broken in a demo.
+
+        anyio.fail_after() is anyio's own timeout primitive: it sets a
+        deadline within the CURRENT task instead of spawning a new one,
+        so the cancel scopes opened during connection setup stay
+        correctly scoped to this object's lifetime and __aexit__ can
+        close them cleanly later, however much later that is.
+        """
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
         self._streams_ctx = streamablehttp_client(self.mcp_url, headers=headers)
         try:
-            read_stream, write_stream, _ = await asyncio.wait_for(
-                self._streams_ctx.__aenter__(), timeout=self.connect_timeout_seconds
-            )
-            self._session = ClientSession(read_stream, write_stream)
-            await self._session.__aenter__()
-            await asyncio.wait_for(
-                self._session.initialize(), timeout=self.connect_timeout_seconds
-            )
-        except asyncio.TimeoutError as exc:
+            async with anyio.fail_after(self.connect_timeout_seconds):
+                read_stream, write_stream, _ = await self._streams_ctx.__aenter__()
+                self._session = ClientSession(read_stream, write_stream)
+                await self._session.__aenter__()
+                await self._session.initialize()
+        except TimeoutError as exc:
+            # anyio.fail_after() raises the built-in TimeoutError (not
+            # asyncio.TimeoutError specifically) on expiry.
             raise DataHubMCPError(
                 f"Timed out connecting to DataHub MCP server at {self.mcp_url} "
                 f"after {self.connect_timeout_seconds}s. Is `datahub docker "
