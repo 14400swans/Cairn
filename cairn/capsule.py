@@ -81,7 +81,7 @@ class Capsule:
             f"{prefix}confidence": [round(self.confidence, 2)],
             f"{prefix}findingType": [self.finding_type.value],
             f"{prefix}summary": [self.summary],
-            f"{prefix}requiresHumanReview": [str(self.requires_human_review)],
+            f"{prefix}requiresHumanReview": [str(self.requires_human_review).lower()],
         }
         # Multi-valued, optional properties: omit rather than send an
         # empty list, since the property's value-type validation may
