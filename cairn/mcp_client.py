@@ -14,7 +14,6 @@ Guide for your specific setup before relying on this for a demo.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from typing import Any, Optional
@@ -160,17 +159,29 @@ class DataHubMCPClient:
         cooldown state would get recorded for a write that never
         actually happened. Checking isError here is what makes that log
         line trustworthy.
+
+        NOTE: this used to wrap self._session.call_tool() in
+        asyncio.wait_for(), same as __aenter__() originally did -- and
+        for the same reason it's wrong here too. call_tool() awaits on
+        the session's underlying anyio memory-object streams, which
+        belong to the cancel scope opened back in __aenter__() on THIS
+        task. Running the await inside a asyncio.wait_for()-spawned Task
+        risks the exact same "different task" cancel-scope mismatch,
+        just triggered by a tool call instead of connection teardown.
+        anyio.fail_after() keeps everything on the one task this client
+        object lives on, from connect through every call through
+        __aexit__.
         """
         if self._session is None:
             raise DataHubMCPError(
                 "DataHubMCPClient used outside of `async with` -- no active session"
             )
         try:
-            result = await asyncio.wait_for(
-                self._session.call_tool(tool_name, arguments),
-                timeout=self.call_timeout_seconds,
-            )
-        except asyncio.TimeoutError as exc:
+            async with anyio.fail_after(self.call_timeout_seconds):
+                result = await self._session.call_tool(tool_name, arguments)
+        except TimeoutError as exc:
+            # anyio.fail_after() raises the built-in TimeoutError (not
+            # asyncio.TimeoutError specifically) on expiry.
             raise DataHubMCPError(
                 f"Tool call `{tool_name}` timed out after "
                 f"{self.call_timeout_seconds}s"
