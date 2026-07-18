@@ -93,7 +93,7 @@ class Sentinel:
             logger.info("documentation_gap: skipping %s (no entity data returned)", urn)
             return []
 
-        description = (entity_results[0].get("description") or "").strip()
+        description = (entity_results[0].get("properties", {}).get("description") or "").strip()
         if not description:
             logger.info("documentation_gap: skipping %s (no existing description)", urn)
             return []
