@@ -114,7 +114,7 @@ class DataHubMCPClient:
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
         self._streams_ctx = streamablehttp_client(self.mcp_url, headers=headers)
         try:
-            async with anyio.fail_after(self.connect_timeout_seconds):
+            with anyio.fail_after(self.connect_timeout_seconds):
                 read_stream, write_stream, _ = await self._streams_ctx.__aenter__()
                 self._session = ClientSession(read_stream, write_stream)
                 await self._session.__aenter__()
@@ -177,7 +177,7 @@ class DataHubMCPClient:
                 "DataHubMCPClient used outside of `async with` -- no active session"
             )
         try:
-            async with anyio.fail_after(self.call_timeout_seconds):
+            with anyio.fail_after(self.call_timeout_seconds):
                 result = await self._session.call_tool(tool_name, arguments)
         except TimeoutError as exc:
             # anyio.fail_after() raises the built-in TimeoutError (not
