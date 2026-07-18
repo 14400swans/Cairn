@@ -98,6 +98,20 @@ written (both as structured properties and a reflection document) while
 a low-confidence finding in the same run is skipped with a logged
 reason.
 
+These thresholds are configurable via environment variables
+(`CAIRN_MIN_CONFIDENCE_TO_WRITE`, `CAIRN_COOLDOWN_HOURS`,
+`CAIRN_MAX_WRITES_PER_RUN`) — for example, to re-run Cairn against a
+dataset it already wrote to within the cooldown window (useful when
+testing, or re-recording a demo after a fix):
+
+```bash
+CAIRN_COOLDOWN_HOURS=0 python -m cairn.cli --dataset-urn "..."
+```
+
+Cooldown state persists across runs in `.cairn_write_state.json` in the
+project root — delete it to reset all cooldown history, e.g. when
+starting fresh against a newly rebuilt DataHub instance.
+
 ## Architecture
 
 ```
@@ -127,10 +141,11 @@ reason.
 ## Status of this code
 
 This has been **built and verified against a live, self-hosted DataHub
-quickstart instance** (2026-07-14) — not just written and assumed to
-work. Along the way, three real integration bugs were found by reading
-the actual `mcp-server-datahub` tool source and testing live writes,
-then fixed and covered by regression tests:
+quickstart instance** (2026-07-14, with a follow-up rebuild-and-reverify
+session on 2026-07-18) — not just written and assumed to work. Along the
+way, five real integration bugs were found by reading the actual
+`mcp-server-datahub` tool source and testing live writes, then fixed and
+covered by regression tests:
 
 - `add_structured_properties` originally sent the wrong payload shape
   (a flat `{urn, structured_properties}` object instead of the real
@@ -140,23 +155,45 @@ then fixed and covered by regression tests:
   datetime was rejected server-side until this was fixed.
 - `save_document` originally used an invented `parent_folder` parameter
   that doesn't exist on the real tool.
+- `mcp_client.py`'s `__aenter__()` originally wrapped connection setup
+  in `asyncio.wait_for()`, which runs its coroutine in a separate
+  asyncio Task under the hood — breaking anyio's cancel-scope-to-Task
+  binding and raising a `TypeError` on connect. The first fix attempt
+  (`anyio.fail_after()`) was itself subtly wrong: `fail_after()` is a
+  *synchronous* context manager, and cancel scopes must close in strict
+  nested order within one block — it can't wrap a method that
+  intentionally leaves resources open past the block (as `__aenter__()`
+  does here, by design, until `__aexit__()` runs later). The actual fix
+  was to drop scope-based timeouts from `__aenter__()` entirely and pass
+  the timeout straight to `streamablehttp_client`'s own `timeout`
+  parameter instead — both mistakes only surfaced by testing against a
+  live MCP server, not from reading the code.
+- `agent.py`'s `_find_documentation_gaps` originally read
+  `entity["description"]` directly; the real `get_entities` MCP tool
+  response nests it under `entity["properties"]["description"]`. This
+  silently caused every dataset with a real, existing description to be
+  skipped as if it had none at all — a bug that unit tests alone didn't
+  catch, since they didn't exercise the real response shape.
 
-`mcp_client.py`'s `call()` method also now checks the MCP tool result's
-`isError` field — earlier, a server-side write failure was silently
-treated as success, which could have poisoned governance's cooldown
-state for a write that never actually happened. See
-`DEVELOPMENT_NOTES.md` for the full account of each bug and fix.
+`mcp_client.py`'s `call()` method also checks the MCP tool result's
+`isError` field — a server-side write failure is reported as a normal
+200-OK response with `isError=True`, not a transport-level exception, so
+without this check a real write failure could have silently poisoned
+governance's cooldown state for a write that never actually happened.
+See `DEVELOPMENT_NOTES.md` for the full account of each bug and fix.
 
-**Confirmed working live**, including a fully independent (not
-hand-seeded) finding: `Sentinel._find_query_drift` found an undocumented,
-heavily-queried `browser` column on a `logging_events` dataset in a
-default `datahub docker quickstart` instance, and Cairn wrote both a
-structured-property capsule and a linked reflection document for it
-without any human constructing the finding by hand.
-
-`documentation_gap` (the LLM-based strategy) is implemented and unit
-tested, but has not yet been run against live data, since that requires
-an `ANTHROPIC_API_KEY`.
+**Confirmed working live**, including fully independent (not
+hand-seeded) findings from both strategies in the same run: against a
+freshly rebuilt `datahub docker quickstart` instance (2026-07-18),
+`Sentinel._find_query_drift` found an undocumented, heavily-queried
+`browser` column on the `logging_events` dataset (confidence 0.90, based
+on query history backfilled via DataHub's own `sql-queries` ingestion
+source), while `Sentinel._find_documentation_gaps` independently flagged
+the dataset's existing description as stale relative to its schema and
+lineage (confidence 0.60, using `claude-sonnet-5`). Both findings passed
+the governance gate and were written as separate structured-property
+capsules and separate linked reflection documents on the same dataset,
+with no finding hand-constructed by a person.
 
 ## Quickstart
 
@@ -176,7 +213,51 @@ local DataHub instance).
 > unrelated demo assets (`fct_users_created`, `logging_events`, etc.).
 > Search your own instance's UI (`localhost:9002`) for a dataset with an
 > undocumented column to try `query_drift` against, rather than assuming
-> `healthcare.*` exists.
+> `healthcare.*` exists. Running `datahub docker ingest-sample-data`
+> loads a larger, more varied sample pack (Hive, Feast, Looker, Airflow,
+> Kafka, HDFS platforms) if you want more datasets to explore.
+
+> **Verified note:** `query_drift` needs actual query history to find
+> anything — a freshly ingested dataset has none. DataHub's `sql-queries`
+> ingestion source can backfill query history from a small NDJSON file
+> for testing/demo purposes:
+> ```yaml
+> # queries_recipe.yml
+> source:
+>   type: sql-queries
+>   config:
+>     platform: "hive"
+>     query_file: "./queries.json"
+> sink:
+>   type: "datahub-rest"
+>   config:
+>     server: "http://localhost:8080"
+> ```
+> ```bash
+> pip install 'acryl-datahub[sql-queries]'
+> datahub ingest -c queries_recipe.yml
+> ```
+> See DataHub's [SQL Queries source docs](https://docs.datahub.com/docs/generated/ingestion/sources/sql-queries)
+> for the full NDJSON query-file format.
+
+### 0. Start DataHub itself
+
+If you don't already have a running DataHub instance, the fastest way to
+get one locally is DataHub's own quickstart (needs Docker running):
+
+```bash
+pip install --upgrade acryl-datahub
+datahub docker quickstart
+# Loads a small built-in demo pack. For a larger, more varied one:
+datahub docker ingest-sample-data
+```
+
+Wait for it to report `DataHub is now running`, then confirm the
+frontend actually loads at <http://localhost:9002> before moving on —
+this isolates "is DataHub itself healthy" from any later Cairn-specific
+debugging.
+
+### 1. Set up Cairn
 
 ```bash
 python -m venv .venv && source .venv/bin/activate     # macOS/Linux
@@ -184,27 +265,61 @@ python -m venv .venv && .venv\Scripts\activate         # Windows
 pip install -r requirements.txt
 pip install -e .
 
-# Install the DataHub CLI itself (separate from this project's own
-# dependencies above -- this is what provides the `datahub` command
-# used below and in DEVELOPMENT_NOTES.md).
-pip install --upgrade acryl-datahub
+cp .env.example .env   # then fill in the values below
+```
 
-cp .env.example .env   # fill in your DataHub MCP endpoint + token
+`.env` needs:
 
-# One-time setup: register the structured property types Cairn writes.
+| Variable | Required? | Notes |
+| --- | --- | --- |
+| `DATAHUB_MCP_URL` | Yes | The MCP server's own URL, e.g. `http://localhost:8000/mcp` — **check the MCP server's startup log for the actual port it bound to** (see step 3 below); it isn't always 8080. |
+| `DATAHUB_PERSONAL_ACCESS_TOKEN` | Only if your DataHub instance has auth enabled | A default local `quickstart` instance has auth disabled, so this can usually be left blank. |
+| `ANTHROPIC_API_KEY` | Only for `documentation_gap` | Without it, `documentation_gap` logs a message and skips cleanly — `query_drift` and the rest of Cairn work fine either way. |
+| `ANTHROPIC_MODEL` | No | Defaults to `claude-sonnet-5` if unset. |
+
+### 2. Register Cairn's structured property types
+
+```bash
 # Confirm the exact subcommand against your DataHub CLI version first
-# (`datahub properties --help`) -- this surface has changed across releases.
+# (`datahub properties --help`) -- this surface has changed across
+# releases. You may see a "Client-Server Incompatible" version warning
+# here -- it's harmless and doesn't stop the properties from being
+# created; check the command's own output for "Created structured
+# property" lines to confirm success.
+#
+# Needs re-running any time you rebuild DataHub from scratch, since a
+# fresh instance has no structured property definitions registered yet
+# even though Cairn will happily try to write values for them --
+# without this step, writes fail with "Unexpected null value found for
+# ... Structured Property Definition".
 datahub properties upsert -f datahub/structured_properties.yaml
+```
 
-# Start the MCP server with writes enabled (in its own terminal --
-# it stays running). Watch its startup log for which port it actually
-# binds to (commonly 8000, not always the DataHub-Cloud-default 8080)
-# and make sure DATAHUB_MCP_URL in .env matches it.
+### 3. Start the MCP server
+
+```bash
+# If `uv`/`uvx` isn't already available in your environment:
+pip install uv
+
+# Runs in its own terminal -- it stays running. Watch its startup log
+# for which port it actually binds to (commonly 8000, not always the
+# DataHub-Cloud-default 8080) and make sure DATAHUB_MCP_URL in .env
+# matches it exactly, including the path (.../mcp).
 TOOLS_IS_MUTATION_ENABLED=true uvx mcp-server-datahub --transport http
+```
 
+### 4. Run Cairn
+
+```bash
 # In a second terminal:
 python -m cairn.cli --dataset-urn "urn:li:dataset:(urn:li:dataPlatform:hive,logging_events,PROD)"
 ```
+
+A successful run logs a `WROTE capsule for ...` line for each finding
+that passes the governance gate. To confirm it visually: open the
+dataset's page at `http://localhost:9002/dataset/<urn>/Properties` and
+look for an `io.cairn (8)` group, or search DataHub for `Cairn:` to find
+the linked reflection document(s) it wrote alongside the properties.
 
 ### Running the tests
 
