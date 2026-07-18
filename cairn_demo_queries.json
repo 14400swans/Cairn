@@ -1,0 +1,4 @@
+{"query": "SELECT browser, event_name FROM logging_events WHERE browser IS NOT NULL", "timestamp": 1752800000.0, "user": "urn:li:corpuser:alice"}
+{"query": "SELECT browser, COUNT(*) FROM logging_events GROUP BY browser", "timestamp": 1752800100.0, "user": "urn:li:corpuser:bob"}
+{"query": "SELECT event_name, timestamp FROM logging_events WHERE browser = 'Chrome'", "timestamp": 1752800200.0, "user": "urn:li:corpuser:alice"}
+{"query": "SELECT browser FROM logging_events LIMIT 100", "timestamp": 1752800300.0, "user": "urn:li:corpuser:carol"}
