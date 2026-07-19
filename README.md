@@ -321,6 +321,10 @@ dataset's page at `http://localhost:9002/dataset/<urn>/Properties` and
 look for an `io.cairn (8)` group, or search DataHub for `Cairn:` to find
 the linked reflection document(s) it wrote alongside the properties.
 
+Want to see the governance gate reject a low-confidence finding on
+demand, without waiting for one to occur naturally? See
+`probe_writeback.py` and its usage notes in `DEVELOPMENT_NOTES.md`.
+
 ### Running the tests
 
 `capsule.py`, `governance.py`, and `agent.py` are fully covered by unit
