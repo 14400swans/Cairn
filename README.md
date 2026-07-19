@@ -322,8 +322,16 @@ look for an `io.cairn (8)` group, or search DataHub for `Cairn:` to find
 the linked reflection document(s) it wrote alongside the properties.
 
 Want to see the governance gate reject a low-confidence finding on
-demand, without waiting for one to occur naturally? See
-`probe_writeback.py` and its usage notes in `DEVELOPMENT_NOTES.md`.
+demand, without waiting for one to occur naturally?
+
+```bash
+python probe_writeback.py "urn:li:dataset:(urn:li:dataPlatform:hive,SampleHiveDataset,PROD)"
+```
+
+See `probe_writeback.py` and its usage notes in `DEVELOPMENT_NOTES.md`
+for what this actually does and why `SampleHiveDataset` (rather than
+whatever dataset you've been running `cairn.cli` against) is the safer
+target — it writes a synthetic test finding, clearly labeled as such.
 
 ### Running the tests
 
@@ -348,4 +356,5 @@ Apache License 2.0 — see `LICENSE`.
 This project's code was written during the hackathon submission period
 (July 6 – August 10, 2026). It draws on *conceptual* patterns explored in
 prior personal projects (an unrelated wellness app) and public DataHub
+documentation, but contains no code carried over from those sources.
 documentation, but contains no code carried over from those sources.
