@@ -209,7 +209,10 @@ def make_entity(description):
                 {
                     "urn": "urn:li:dataset:(test,ds,PROD)",
                     "name": "ds",
-                    "description": description,
+                    "properties": {
+                        "name": "ds",
+                        "description": description,
+                    },
                 }
             ]
         }
