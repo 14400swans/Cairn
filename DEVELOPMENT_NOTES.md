@@ -15,19 +15,38 @@ last verified 2026-07-18 against a freshly rebuilt, self-hosted
 - `governance.py` — confidence threshold, per-run write cap, and
   per-entity cooldown, backed by a small local JSON state file.
   Complete, unit-testable without any DataHub connection, and confirmed
-  live: a high-confidence finding was written while a low-confidence
-  finding in the same run was correctly skipped with a logged reason.
-  Cooldown is keyed by entity URN only (not by finding type), so a
-  write from one strategy also blocks a same-run write from the other
-  strategy on the same entity — confirmed live on 2026-07-18, when a
-  second run against `logging_events` within the cooldown window was
-  correctly skipped for both `query_drift` and `documentation_gap`
-  with a logged reason, until `CAIRN_COOLDOWN_HOURS=0` was set to
-  intentionally bypass it for testing.
+  live on every axis, not just described:
+  - **Confidence threshold:** `probe_writeback.py`, run against
+    `SampleHiveDataset` on 2026-07-18, submitted one deliberately
+    high-confidence finding (0.85) and one deliberately low-confidence
+    one (0.2) in the same call. The high-confidence finding was
+    written (structured properties confirmed in the DataHub UI,
+    including the `[TEST] manually-constructed finding...` summary and
+    an `assumptions_made` entry that honestly labels it as
+    script-constructed rather than Sentinel-produced); the
+    low-confidence finding was correctly skipped with a logged reason,
+    and no trace of it appeared anywhere in the UI.
+  - **Cooldown:** a write from one strategy also blocks a same-run
+    write from the other strategy on the same entity, since
+    `_last_write_by_urn` is keyed by entity URN only, not by finding
+    type. Confirmed live on 2026-07-18, when a second run against
+    `logging_events` within the cooldown window was correctly skipped
+    for both `query_drift` and `documentation_gap` with a logged
+    reason, until `CAIRN_COOLDOWN_HOURS=0` was set to intentionally
+    bypass it for testing.
+  - **Not yet confirmed live:** `max_writes_per_run`. Covered by
+    `test_max_writes_per_run_is_enforced` in `test_governance.py`
+    (passing), but no live run has actually produced more than two
+    findings in one call, so the cap itself hasn't been exercised
+    against a real DataHub instance.
 - `mcp_client.py` — a real async wrapper around the official `mcp`
   Python client, using streamable HTTP transport. Confirmed against a
   live `mcp-server-datahub==0.6.0` instance. `call()` also checks the
-  MCP result's `isError` field (see "Bugs found and fixed" below).
+  MCP result's `isError` field (see "Bugs found and fixed" below) —
+  note this specific check is unit-tested (`test_write_reflection.py`)
+  but has not been triggered by an actual live write failure; every
+  live write attempted so far has succeeded or been correctly blocked
+  by governance before reaching the write call at all.
 - `agent.py` — the full orchestration loop (inspect → findings →
   governance gate → write) is real, runnable end-to-end, and has been
   run successfully against a live instance. **Both finding strategies
@@ -58,6 +77,14 @@ last verified 2026-07-18 against a freshly rebuilt, self-hosted
   properties, which are overwritten per-entity by whichever strategy
   wrote last) — both were found independently via DataHub search on
   2026-07-18.
+- **The full test suite** (`pytest tests/ -v`) — 27 tests across
+  `test_agent.py`, `test_governance.py`, and `test_write_reflection.py`
+  — was run in full on 2026-07-18, after all six bug fixes below, and
+  all 27 pass. (First run reported `ModuleNotFoundError: No module
+  named 'cairn'`, collecting 0 tests — the `.venv` in use hadn't had
+  `pip install -e .` run against it; `python -m cairn.cli` had been
+  masking this the whole session, since `-m` adds the current
+  directory to `sys.path` on its own, which `pytest` doesn't do.)
 
 ## Confirmed live: independent, non-hand-seeded findings from both strategies
 
@@ -83,6 +110,12 @@ documents, confirmed visible in both the dataset's Properties tab and
 via DataHub search. `examples/sample_capsule.json` and
 `examples/sample_finding.json` contain a captured real run, not a
 fabricated example.
+
+Later the same day, `probe_writeback.py` was run against
+`SampleHiveDataset` specifically to exercise the governance gate's
+confidence threshold on demand (rather than waiting for a real finding
+to happen to land on either side of it) — see the confidence-threshold
+bullet under `governance.py` above for the result.
 
 ## Bugs found and fixed during live verification (2026-07-13/14)
 
@@ -180,22 +213,37 @@ against a genuinely live MCP connection:
    guessing at the shape rather than inspecting a real response. This
    silently caused every dataset with a real, existing description to
    be skipped as `"no existing description"`, as if it were completely
-   undocumented — a bug unit tests alone didn't catch, since they
-   didn't exercise the real response shape. Found by writing a
-   one-off diagnostic script that dumped the raw `structuredContent` of
-   all three MCP tool calls Sentinel makes, rather than guessing again.
+   undocumented — a bug unit tests alone didn't catch, since the
+   `make_entity()` test helper in `test_agent.py` built its mock entity
+   with the same flat, incorrect shape as the buggy code, so the test
+   and the bug agreed with each other. Found by writing a one-off
+   diagnostic script (`inspect_mcp_shapes.py`) that dumped the raw
+   `structuredContent` of all three MCP tool calls Sentinel makes,
+   rather than guessing at the shape again.
 
 All six fixes are covered by tests: `test_capsule_structured_properties_shape`,
 `test_capsule_session_timestamp_is_date_only` (both in
 `test_governance.py`), and the full `test_write_reflection.py` suite,
 which specifically pins down that a failed write is never recorded and
 a failed reflection document never undoes a successful structured
-property write. The two 2026-07-18 fixes (bugs 5 and 6) are not yet
-covered by dedicated regression tests — bug 6 in particular would be
-worth a unit test that asserts `_find_documentation_gaps` reads
-`entity["properties"]["description"]` rather than `entity["description"]`,
-since that's exactly the kind of response-shape assumption that unit
-tests with mocked data can silently paper over.
+property write. Fix 6 is now indirectly covered too: after the fix,
+`test_agent.py`'s `make_entity()` helper had to be updated to build its
+mock entity with the corrected, live-verified nested shape
+(`{"properties": {"description": ...}}` instead of a flat
+`{"description": ...}`) — this was itself only discovered because
+`test_doc_gap_flags_stale_description` and
+`test_doc_gap_passes_lineage_as_context_without_parsing` started
+failing against the fixed code with the old fixture, which is exactly
+the kind of check that's supposed to catch this class of bug. Both
+tests pass again now that the fixture matches reality. Fix 5 (the
+`asyncio.wait_for`/`anyio.fail_after` cancel-scope issue) still has no
+dedicated regression test — it's inherently awkward to unit-test
+without a real anyio-backed transport, so it currently relies on the
+live `cairn.cli` run and `probe_writeback.py` continuing to pass as its
+only safety net. If this project continues past the hackathon, a
+worthwhile addition would be an integration test that spins up a
+minimal local anyio/MCP server fixture specifically to catch cancel
+scope misuse like this without needing a full live DataHub instance.
 
 ## Not wired up at all (future work, mentioned in the README as ideas)
 
@@ -258,6 +306,14 @@ tests with mocked data can silently paper over.
   `CAIRN_COOLDOWN_HOURS=0` for that run, or delete
   `.cairn_write_state.json` to reset all cooldown history — both are
   documented in the README's "Governed write-back" section.
+- **A fresh `.venv` needs `pip install -e .` before `pytest` will find
+  anything.** `python -m cairn.cli` works without it, because `-m`
+  silently adds the current directory to `sys.path` on its own —
+  `pytest` doesn't do this, and will report `collected 0 items / 3
+  errors` with `ModuleNotFoundError: No module named 'cairn'` if the
+  package was never actually installed into the active environment.
+  Confirmed on 2026-07-18: `pip install -e .` fixed it immediately,
+  and all 27 tests then passed.
 
 ## Before recording the demo video
 
@@ -287,13 +343,13 @@ tests with mocked data can silently paper over.
    history via `sql-queries` ingestion. The `logging_events` dataset
    with its undocumented `browser` column is a known-working example
    on a default quickstart instance once query history exists for it.
-5. Deliberately show one *skipped* write (a low-confidence finding, or
-   a cooldown skip) in the same run — this is the clearest way to
-   demonstrate the governance gate is real, not just described in the
-   README. `probe_writeback.py` is set up to do exactly this (one
-   high-confidence, one low-confidence finding) if you want a
-   guaranteed skip alongside a real independent finding from
-   `logging_events`.
+5. Deliberately show one *skipped* write in the same run — this is the
+   clearest way to demonstrate the governance gate is real, not just
+   described in the README. Two options, both confirmed working live:
+   a naturally low-confidence finding, or `probe_writeback.py` against
+   a dataset outside its cooldown window (e.g. `SampleHiveDataset`),
+   which guarantees one write and one skip on demand without waiting
+   for a real finding to land on the right side of the threshold.
 6. Show the result in the DataHub UI in both places Cairn writes to:
    the dataset's **Properties** tab (`io.cairn.*` fields) and its
    **Documentation** tab's Resources section (the linked reflection
@@ -304,3 +360,8 @@ tests with mocked data can silently paper over.
    both reflection documents remain visible and searchable
    independently — worth calling out explicitly rather than letting it
    look like one finding overwrote or erased the other.
+7. Run `pytest tests/ -v` one last time right before recording (with
+   `pip install -e .` already done in that environment — see
+   "Environment notes" above) as a final sanity check that nothing in
+   the recording environment is subtly different from what was last
+   verified. All 27 tests should pass.
