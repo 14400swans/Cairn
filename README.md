@@ -357,4 +357,3 @@ This project's code was written during the hackathon submission period
 (July 6 – August 10, 2026). It draws on *conceptual* patterns explored in
 prior personal projects (an unrelated wellness app) and public DataHub
 documentation, but contains no code carried over from those sources.
-documentation, but contains no code carried over from those sources.
